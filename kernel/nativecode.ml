@@ -1860,7 +1860,7 @@ let compile_constant env sigma prefix ~interactive con cb =
        else Univ.Instance.empty
      in
     begin match cb.const_body with
-    | Def t ->
+    | Def t when not cb.const_polymorphic ->
       let t = Mod_subst.force_constr t in
       let code = lambda_of_constr env sigma t in
       if !Flags.debug then Pp.msg_debug (Pp.str "Generated lambda code");

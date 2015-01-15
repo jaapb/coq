@@ -597,7 +597,8 @@ let main_targets vfiles (mlifiles,ml4files,mlfiles,mllibfiles,mlpackfiles) other
       print "HTMLFILES:=$(VFILES:.v=.html)\n";
       print "GHTMLFILES:=$(VFILES:.v=.g.html)\n";
       print "OBJFILES=$(call vo_to_obj,$(VOFILES))\n";
-      print "NATIVEFILES=$(OBJFILES:.o=.cmi) $(OBJFILES:.o=.cmo) $(OBJFILES:.o=.cmx) $(OBJFILES:.o=.cmxs)\n";
+      print "ALLNATIVEFILES=$(OBJFILES:.o=.cmi) $(OBJFILES:.o=.cmo) $(OBJFILES:.o=.cmx) $(OBJFILES:.o=.cmxs)\n";
+      print "NATIVEFILES=$(foreach f, $(ALLNATIVEFILES), $(wildcard $f))\n";
       classify_files_by_root "NATIVEFILES" l inc
   end;
   decl_var "ML4FILES" ml4files;

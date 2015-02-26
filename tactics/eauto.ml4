@@ -155,6 +155,14 @@ let hintmap_of hdc concl =
     else (fun db -> Hint_db.map_auto hdc concl db)
    (* FIXME: should be (Hint_db.map_eauto hdc concl db) *)
 
+let hintmap_of hdc concl =
+  match hdc with
+  | None -> fun db -> Hint_db.map_none db
+  | Some hdc ->
+    if occur_existential concl then (fun db -> Hint_db.map_existential hdc concl db)
+    else (fun db -> Hint_db.map_auto hdc concl db)
+   (* FIXME: should be (Hint_db.map_eauto hdc concl db) *)
+
 let e_exact poly flags (c,clenv) =
   let (c, _, _) = c in
   let clenv', subst = 

@@ -87,6 +87,14 @@ val eq_constr_univs_infer_with :
   (constr -> (constr,types) kind_of_term) ->
   UGraph.t -> 'a constraint_accumulator -> constr -> constr -> 'a -> 'a option
 
+(** [eq_constr_univs_infer_With kind1 kind2 univs m n] is a variant of
+    {!eq_constr_univs_infer} taking kind-of-term functions, to expose
+    subterms of [m] and [n], arguments. *)
+val eq_constr_univs_infer_with :
+  (constr -> (constr,types) kind_of_term) ->
+  (constr -> (constr,types) kind_of_term) ->
+  Univ.universes -> constr -> constr -> bool universe_constrained
+
 (** [leq_constr_univs u a b] is [true, c] if [a] is convertible to [b]
     modulo alpha, casts, application grouping, the universe constraints
     in [u] and additional constraints [c]. *)

@@ -46,7 +46,7 @@ let rec which l f =
     | [] ->
       raise Not_found
     | p :: tl ->
-      if Sys.file_exists (p / f) then
+      if file_exists_respecting_case (p / f) then
 	p
       else
 	which tl f
@@ -105,7 +105,7 @@ let _ =
     Using file system equality seems well enough for this heuristic *)
 let check_file_else ~dir ~file oth =
   let path = if Coq_config.local then coqroot else coqroot / dir in
-  if Sys.file_exists (path / file) then path else oth ()
+  if file_exists_respecting_case (path / file) then path else oth ()
 
 let guess_coqlib fail =
   let prelude = "theories/Init/Prelude.vo" in
@@ -137,7 +137,7 @@ let coqpath =
   let coqpath = getenv_else "COQPATH" (fun () -> "") in
   let make_search_path path =
     let paths = path_to_list path in
-    let valid_paths = List.filter Sys.file_exists paths in
+    let valid_paths = List.filter file_exists_respecting_case paths in
     List.rev valid_paths
   in
   make_search_path coqpath

@@ -830,20 +830,71 @@ let configure ?(apply=(fun () -> ())) () =
       [string_of_project_behavior Subst_args;
        string_of_project_behavior Append_args;
        string_of_project_behavior Ignore_args]
-      (string_of_project_behavior read_project#get)
+      (string_of_project_behavior current.read_project)
+  in
+  let project_file_name =
+    string "Default name for project file"
+      ~f:(fun s -> current.project_file_name <- s)
+      current.project_file_name
+  in
+  let update_modifiers prefix mds =
+    let change ~path ~key ~modi ~changed =
+      if CString.is_sub prefix path 0 then
+        ignore (GtkData.AccelMap.change_entry ~key ~modi:mds ~replace:true path)
+    in
+    GtkData.AccelMap.foreach change
+  in
+  let help_string =
+    "restart to apply"
   in
   let project_file_name = pstring "Default name for project file" project_file_name in
   let modifier_for_tactics =
-    pmodifiers "Modifiers for Tactics Menu" modifier_for_tactics
+    let cb l =
+      current.modifier_for_tactics <- mod_list_to_str l;
+      update_modifiers "<Actions>/Tactics/" l
+    in
+    modifiers
+      ~allow:the_valid_mod
+      ~f:cb
+      ~help:help_string
+      "Modifiers for Tactics Menu"
+      (str_to_mod_list current.modifier_for_tactics)
   in
   let modifier_for_templates =
-    pmodifiers "Modifiers for Templates Menu" modifier_for_templates
+    let cb l =
+      current.modifier_for_templates <- mod_list_to_str l;
+      update_modifiers "<Actions>/Templates/" l
+    in
+    modifiers
+      ~allow:the_valid_mod
+      ~f:cb
+      ~help:help_string
+      "Modifiers for Templates Menu"
+      (str_to_mod_list current.modifier_for_templates)
   in
   let modifier_for_navigation =
-    pmodifiers "Modifiers for Navigation Menu" modifier_for_navigation
+    let cb l =
+      current.modifier_for_navigation <- mod_list_to_str l;
+      update_modifiers "<Actions>/Navigation/" l
+    in
+    modifiers
+      ~allow:the_valid_mod
+      ~f:cb
+      ~help:help_string
+      "Modifiers for Navigation Menu"
+      (str_to_mod_list current.modifier_for_navigation)
   in
   let modifier_for_display =
-    pmodifiers "Modifiers for View Menu" modifier_for_display
+    let cb l =
+      current.modifier_for_display <- mod_list_to_str l;
+      update_modifiers "<Actions>/View/" l
+    in
+    modifiers
+      ~allow:the_valid_mod
+      ~f:cb
+      ~help:help_string
+      "Modifiers for View Menu"
+      (str_to_mod_list current.modifier_for_display)
   in
   let modifiers_valid =
     pmodifiers ~all:true "Allowed modifiers" modifiers_valid

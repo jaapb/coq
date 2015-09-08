@@ -117,18 +117,26 @@ let _ =
       optread  = (fun () -> !universal_lemma_under_conjunctions) ;
       optwrite = (fun b -> universal_lemma_under_conjunctions := b) }
 
-(* Shrinking of abstract proofs. *)
+(* The following boolean governs what "intros []" do on examples such
+   as "forall x:nat*nat, x=x"; if true, it behaves as "intros [? ?]";
+   if false, it behaves as "intro H; case H; clear H" for fresh H.
+   Kept as false for compatibility.
+ *)
 
-let shrink_abstract = ref false
+let bracketing_last_or_and_intro_pattern = ref false
+
+let use_bracketing_last_or_and_intro_pattern () =
+  !bracketing_last_or_and_intro_pattern
+  && Flags.version_strictly_greater Flags.V8_4
 
 let _ =
   declare_bool_option
     { optsync  = true;
       optdepr  = false;
-      optname  = "shrinking of abstracted proofs";
-      optkey   = ["Shrink"; "Abstract"];
-      optread  = (fun () -> !shrink_abstract) ;
-      optwrite = (fun b -> shrink_abstract := b) }
+      optname  = "bracketing last or-and introduction pattern";
+      optkey   = ["Bracketing";"Last";"Introduction";"Pattern"];
+      optread  = (fun () -> !bracketing_last_or_and_intro_pattern) ;
+      optwrite = (fun b -> bracketing_last_or_and_intro_pattern := b) }
 
 (* The following boolean governs what "intros []" do on examples such
    as "forall x:nat*nat, x=x"; if true, it behaves as "intros [? ?]";

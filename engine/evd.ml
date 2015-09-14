@@ -757,6 +757,36 @@ let universe_context ?names evd = UState.universe_context ?names evd.universes
 let restrict_universe_context evd vars =
   { evd with universes = UState.restrict evd.universes vars }
 
+let universe_context ?names evd =
+  match names with
+  | None -> Univ.ContextSet.to_context evd.universes.uctx_local
+  | Some pl ->
+     let levels = Univ.ContextSet.levels evd.universes.uctx_local in
+     let newinst, left =
+       List.fold_right
+         (fun (loc,id) (newinst, acc) ->
+	  let l =
+	    try UNameMap.find (Id.to_string id) (fst evd.universes.uctx_names)
+	    with Not_found ->
+	      user_err_loc (loc, "universe_context",
+			    str"Universe " ++ pr_id id ++ str" is not bound anymore.")
+	  in (l :: newinst, Univ.LSet.remove l acc))
+	 pl ([], levels)
+     in
+       if not (Univ.LSet.is_empty left) then
+         let n = Univ.LSet.cardinal left in
+           errorlabstrm "universe_context"
+			(str(CString.plural n "Universe") ++ spc () ++
+			     Univ.LSet.pr (pr_uctx_level evd.universes) left ++
+			     spc () ++ str (CString.conjugate_verb_to_be n) ++ str" unbound.")
+       else Univ.UContext.make (Univ.Instance.of_array (Array.of_list newinst),
+				Univ.ContextSet.constraints evd.universes.uctx_local)
+
+let restrict_universe_context evd vars =
+  let uctx = evd.universes in
+  let uctx' = Universes.restrict_universe_context uctx.uctx_local vars in
+    { evd with universes = { uctx with uctx_local = uctx' } }
+						 
 let universe_subst evd =
   UState.subst evd.universes
 
@@ -797,6 +827,15 @@ let make_evar_universe_context e l =
         fst (UState.new_univ_variable univ_rigid (Some (Id.to_string id)) uctx))
         uctx us
 
+let make_evar_universe_context e l = 
+  let uctx = evar_universe_context_from e in
+    match l with
+    | None -> uctx
+    | Some us ->
+       List.fold_left (fun uctx (loc,id) ->
+		       fst (uctx_new_univ_variable univ_rigid (Some (Id.to_string id)) uctx))
+		      uctx us
+    
 (****************************************)
 (* Operations on constants              *)
 (****************************************)

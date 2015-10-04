@@ -179,8 +179,13 @@ let rec e_trivial_fail_db db_list local_db =
   Proofview.Goal.enter { enter = begin fun gl ->
   let tacl =
     registered_e_assumption ::
-    (Tacticals.New.tclTHEN Tactics.intro next) ::
-    (List.map fst (e_trivial_resolve db_list local_db (Tacmach.New.pf_nf_concl gl)))
+    (tclTHEN (Proofview.V82.of_tactic Tactics.intro)
+       (function g'->
+	  let d = pf_last_hyp g' in
+	  let hintl = make_resolve_hyp (pf_env g') (project g') d in
+          (e_trivial_fail_db db_list
+	      (Hint_db.add_list (pf_env g') (project g') hintl local_db) g'))) ::
+    (List.map fst (e_trivial_resolve db_list local_db (pf_concl goal)) )
   in
   Tacticals.New.tclFIRST (List.map Tacticals.New.tclCOMPLETE tacl)
   end }

@@ -63,6 +63,10 @@ module NonLogical : sig
   val print_info : Pp.std_ppcmds -> unit t
   val print_error : Pp.std_ppcmds -> unit t
 
+  (* FIXME: shouldn't we have a logger instead? *)
+  (** {!Pp.pp}. The buffer is also flushed. *)
+  val print_debug : Pp.std_ppcmds -> unit t
+
   (** [Pervasives.raise]. Except that exceptions are wrapped with
       {!Exception}. *)
   val raise : ?info:Exninfo.info -> exn -> 'a t

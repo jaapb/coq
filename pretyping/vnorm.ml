@@ -150,6 +150,7 @@ and nf_whd env whd typ =
     construct_of_constr_const env n typ
   | Vconstr_block b ->
       let tag = btag b in
+      let x = tag in
       let (tag,ofs) =
         if tag = Cbytecodes.last_variant_tag then
 	  match whd_val (bfield b 0) with

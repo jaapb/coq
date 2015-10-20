@@ -458,8 +458,8 @@ module Goal : sig
   type ('a, 'b) enter =
     { enter : 'r. ('a, 'r) t -> 'b }
 
-  type 'a enter =
-    { enter : 'a t -> unit tactic }
+  type ('a, 'b) enter =
+    { enter : 'r. ('a, 'r) t -> 'b }
 
   (** [nf_enter t] applies the goal-dependent tactic [t] in each goal
       independently, in the manner of {!tclINDEPENDENT} except that

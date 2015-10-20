@@ -41,10 +41,12 @@ val run : 'a t -> ('a -> unit Proofview.tactic) -> unit Proofview.tactic
 
 val nf_enter : ([ `NF ], 'a t) enter -> 'a t
 (** Enter a goal. The resulting tactic is focussed. *)
+(** FIXME: Should be polymorphic over the stage. *)
 
 val enter : ([ `LZ ], 'a t) enter -> 'a t
 (** Enter a goal, without evar normalization. The resulting tactic is
     focussed. *)
+(** FIXME: Should be polymorphic over the stage. *)
 
 val s_enter : ([ `LZ ], 'a t) s_enter -> 'a t
 (** Enter a goal and put back an evarmap. The resulting tactic is focussed. *)

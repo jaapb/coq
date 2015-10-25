@@ -447,13 +447,18 @@ let browser =
 (** * OCaml programs *)
 
 let camlbin, caml_version, camllib =
-  let () = match !Prefs.ocamlfindcmd with
-    | Some cmd -> reset_caml_find camlexec cmd
-    | None ->
-       try reset_caml_find camlexec (which camlexec.find)
-       with Not_found ->
-	 die (sprintf "Error: cannot find '%s' in your path!\n" camlexec.find ^
-		"Please adjust your path or use the -ocamlfind option of ./configure")
+  let camlbin, camlc = match !Prefs.camldir with
+  | Some dir ->
+    rebase_camlexec dir camlexec;
+    Filename.dirname camlexec.byte, camlexec.byte
+  | None ->
+    try let camlc = which camlexec.byte in
+        let dir = Filename.dirname camlc in
+        rebase_camlexec dir camlexec;
+        dir, camlc
+    with Not_found ->
+      die (sprintf "Error: cannot find '%s' in your path!\n" camlexec.byte ^
+           "Please adjust your path or use the -camldir option of ./configure")
   in
   if not (is_executable camlexec.find)
   then die ("Error: cannot find the executable '"^camlexec.find^"'.")

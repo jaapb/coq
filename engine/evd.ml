@@ -799,6 +799,40 @@ let merge_universe_subst evd subst =
 let with_context_set rigid d (a, ctx) = 
   (merge_context_set rigid d ctx, a)
 
+let emit_universe_side_effects eff u =
+  let uctxs = Safe_typing.universes_of_private eff in
+  List.fold_left (merge_uctx true univ_rigid) u uctxs
+        
+let add_uctx_names s l (names, names_rev) =
+    (UNameMap.add s l names, Univ.LMap.add l s names_rev)
+
+let uctx_new_univ_variable rigid name predicative
+  ({ uctx_local = ctx; uctx_univ_variables = uvars; uctx_univ_algebraic = avars} as uctx) =
+  let u = Universes.new_univ_level (Global.current_dirpath ()) in
+  let ctx' = Univ.ContextSet.add_universe u ctx in
+  let uctx', pred =
+    match rigid with
+    | UnivRigid -> uctx, true
+    | UnivFlexible b -> 
+      let uvars' = Univ.LMap.add u None uvars in
+	if b then {uctx with uctx_univ_variables = uvars';
+	  uctx_univ_algebraic = Univ.LSet.add u avars}, false
+	else {uctx with uctx_univ_variables = uvars'}, false
+  in
+  let names = 
+    match name with
+    | Some n -> add_uctx_names n u uctx.uctx_names
+    | None -> uctx.uctx_names
+  in
+  let initial =
+    Univ.add_universe u false uctx.uctx_initial_universes
+  in						     
+  let uctx' =
+    {uctx' with uctx_names = names; uctx_local = ctx';
+		uctx_universes = Univ.add_universe u false uctx.uctx_universes;
+		uctx_initial_universes = initial}
+  in uctx', u
+						     
 let new_univ_level_variable ?name ?(predicative=true) rigid evd =
   let uctx', u = UState.new_univ_variable rigid name evd.universes in
     ({evd with universes = uctx'}, u)

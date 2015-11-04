@@ -259,7 +259,80 @@ let instantiate_evar_array info c args =
   | [] -> c
   | _ -> replace_vars inst c
 
-type evar_universe_context = UState.t
+module StringOrd = struct type t = string let compare = String.compare end
+module UNameMap = struct
+    
+  include Map.Make(StringOrd)
+    
+  let union s t = 
+    if s == t then s
+    else
+      merge (fun k l r -> 
+	match l, r with
+	| Some _, _ -> l
+	| _, _ -> r) s t
+end
+
+(* 2nd part used to check consistency on the fly. *)
+type evar_universe_context = 
+ { uctx_names : Univ.Level.t UNameMap.t * string Univ.LMap.t;
+   uctx_local : Univ.universe_context_set; (** The local context of variables *)
+   uctx_univ_variables : Universes.universe_opt_subst;
+   (** The local universes that are unification variables *)
+   uctx_univ_algebraic : Univ.universe_set; 
+   (** The subset of unification variables that can be instantiated with
+	algebraic universes as they appear in inferred types only. *)
+   uctx_universes : Univ.universes; (** The current graph extended with the local constraints *)
+   uctx_initial_universes : Univ.universes; (** The graph at the creation of the evar_map *)
+ }
+  
+let empty_evar_universe_context = 
+  { uctx_names = UNameMap.empty, Univ.LMap.empty;
+    uctx_local = Univ.ContextSet.empty;
+    uctx_univ_variables = Univ.LMap.empty;
+    uctx_univ_algebraic = Univ.LSet.empty;
+    uctx_universes = Univ.initial_universes;
+    uctx_initial_universes = Univ.initial_universes }
+
+let evar_universe_context_from e = 
+  let u = universes e in
+    {empty_evar_universe_context with 
+      uctx_universes = u; uctx_initial_universes = u}
+
+let is_empty_evar_universe_context ctx =
+  Univ.ContextSet.is_empty ctx.uctx_local && 
+    Univ.LMap.is_empty ctx.uctx_univ_variables
+
+let union_evar_universe_context ctx ctx' =
+  if ctx == ctx' then ctx
+  else if is_empty_evar_universe_context ctx' then ctx
+  else
+    let local = Univ.ContextSet.union ctx.uctx_local ctx'.uctx_local in
+    let names = UNameMap.union (fst ctx.uctx_names) (fst ctx'.uctx_names) in
+    let newus = Univ.LSet.diff (Univ.ContextSet.levels ctx'.uctx_local)
+			       (Univ.ContextSet.levels ctx.uctx_local) in
+    let newus = Univ.LSet.diff newus (Univ.LMap.domain ctx.uctx_univ_variables) in
+    let declarenew g =
+      Univ.LSet.fold (fun u g -> Univ.add_universe u false g) newus g
+    in
+    let names_rev = Univ.LMap.union (snd ctx.uctx_names) (snd ctx'.uctx_names) in
+      { uctx_names = (names, names_rev);
+	uctx_local = local;
+	uctx_univ_variables = 
+	  Univ.LMap.subst_union ctx.uctx_univ_variables ctx'.uctx_univ_variables;
+	uctx_univ_algebraic = 
+	  Univ.LSet.union ctx.uctx_univ_algebraic ctx'.uctx_univ_algebraic;
+	uctx_initial_universes = declarenew ctx.uctx_initial_universes;
+	uctx_universes = 
+	  if local == ctx.uctx_local then ctx.uctx_universes
+	  else
+	    let cstrsr = Univ.ContextSet.constraints ctx'.uctx_local in
+	      Univ.merge_constraints cstrsr (declarenew ctx.uctx_universes) }
+
+(* let union_evar_universe_context_key = Profile.declare_profile "union_evar_universe_context";; *)
+(* let union_evar_universe_context =  *)
+(*   Profile.profile2 union_evar_universe_context_key union_evar_universe_context;; *)
+
 type 'a in_evar_universe_context = 'a * evar_universe_context
 
 let empty_evar_universe_context = UState.empty

@@ -537,6 +537,11 @@ let rec add_directory recur add_file phys_dir log_dir =
 let add_norec_dir_import add_file phys_dir log_dir =
   try add_directory false (add_file true) phys_dir log_dir with Unix_error _ -> ()
 
+(** Simply add this directory and imports it, no subdirs. This is used
+    by the implicit adding of the current path (which is not recursive). *)
+let add_norec_dir_import add_file phys_dir log_dir =
+  try add_directory false (add_file true) phys_dir log_dir with Unix_error _ -> ()
+
 (** -Q semantic: go in subdirs but only full logical paths are known. *)
 let add_rec_dir_no_import add_file phys_dir log_dir =
   try add_directory true (add_file false) phys_dir log_dir with Unix_error _ -> ()

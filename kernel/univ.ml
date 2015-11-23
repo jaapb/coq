@@ -1228,6 +1228,19 @@ let pr_universe_subst =
 let pr_universe_level_subst = 
   LMap.pr (fun u -> str" := " ++ Level.pr u ++ spc ())
 
+(* Dumping constraints to a file *)
+
+let dump_universes output g =
+  let dump_arc u = function
+    | Canonical {univ=u; lt=lt; le=le} ->
+	let u_str = Level.to_string u in
+	List.iter (fun v -> output Lt u_str (Level.to_string v)) lt;
+	List.iter (fun v -> output Le u_str (Level.to_string v)) le
+    | Equiv v ->
+      output Eq (Level.to_string u) (Level.to_string v)
+  in
+  UMap.iter dump_arc g
+
 module Huniverse_set = 
   Hashcons.Make(
     struct

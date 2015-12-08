@@ -22,7 +22,6 @@ open Evd
 open Termops
 open Equality
 open Misctypes
-open Sigma.Notations
 open Proofview.Notations
 
 DECLARE PLUGIN "extratactics"

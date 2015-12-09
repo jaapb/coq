@@ -14,22 +14,8 @@ open Util
 
 (** Dealing with directories *)
 
-type unix_path = string (* path in unix-style, with '/' separator *)
-
-type file_kind =
-  | FileDir of unix_path * (* basename of path: *) string
-  | FileRegular of string (* basename of file *)
-
-(* Copy of Filename.concat but assuming paths to always be POSIX *)
-
-let (//) dirname filename =
-  let l = String.length dirname in
-  if l = 0 || dirname.[l-1] = '/'
-  then dirname ^ filename
-  else dirname ^ "/" ^ filename
-
-(* Excluding directories; We avoid directories starting with . as well
-   as CVS and _darcs and any subdirs given via -exclude-dir *)
+let exists_dir dir =
+  try Sys.is_directory dir with Sys_error _ -> false
 
 let skipped_dirnames = ref ["CVS"; "_darcs"]
 
@@ -77,14 +63,16 @@ let process_subdirectories f path =
 let all_subdirs ~unix_path:root =
   let l = ref [] in
   let add f rel = l := (f, rel) :: !l in
-  let rec traverse path rel =
-    let f = function
-      | FileDir (path,f) ->
-	  let newrel = rel @ [f] in
-	  add path newrel;
-	  traverse path newrel
-      | _ -> ()
-    in process_directory f path
+  let rec traverse dir rel =
+    Array.iter (fun f ->
+      if ok_dirname f then
+	let file = Filename.concat dir f in
+        if Sys.is_directory file then begin
+          let newrel = rel @ [f] in
+	  add file newrel;
+	  traverse file newrel
+        end)
+      (Sys.readdir dir)
   in
   check_unix_dir (fun s -> msg_warning (str s)) root;
   if exists_dir root then traverse root []

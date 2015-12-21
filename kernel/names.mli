@@ -409,7 +409,7 @@ end
 
 module Mindset : CSig.SetS with type elt = MutInd.t
 module Mindmap : Map.ExtS with type key = MutInd.t and module Set := Mindset
-module Mindmap_env : CSig.MapS with type key = MutInd.t
+module Mindmap_env : Map.S with type key = MutInd.t
 
 (** Designation of a (particular) inductive type. *)
 type inductive = MutInd.t      (* the name of the inductive type *)
@@ -422,10 +422,10 @@ type constructor = inductive   (* designates the inductive type *)
                  * int         (* the index of the constructor
                                   BEWARE: indexing starts from 1. *)
 
-module Indmap : CSig.MapS with type key = inductive
-module Constrmap : CSig.MapS with type key = constructor
-module Indmap_env : CSig.MapS with type key = inductive
-module Constrmap_env : CSig.MapS with type key = constructor
+module Indmap : Map.S with type key = inductive
+module Constrmap : Map.S with type key = constructor
+module Indmap_env : Map.S with type key = inductive
+module Constrmap_env : Map.S with type key = constructor
 
 val ind_modpath : inductive -> ModPath.t
 val constr_modpath : constructor -> ModPath.t

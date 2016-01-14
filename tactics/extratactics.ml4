@@ -21,6 +21,7 @@ open Util
 open Evd
 open Equality
 open Misctypes
+open Proofview.Notations
 
 DECLARE PLUGIN "extratactics"
 
@@ -264,7 +265,7 @@ TACTIC EXTEND rewrite_star
 let add_rewrite_hint bases ort t lcsr =
   let env = Global.env() in
   let sigma = Evd.from_env env in
-  let poly = Flags.is_universe_polymorphism () in 
+  let poly = Flags.use_polymorphic_flag () in
   let f ce = 
     let c, ctx = Constrintern.interp_constr env sigma ce in
     let ctx =
@@ -344,7 +345,7 @@ END
 (**********************************************************************)
 (* Refine                                                             *)
 
-let refine_tac {Glob_term.closure=closure;term=term} =
+let refine_tac simple {Glob_term.closure=closure;term=term} =
   Proofview.Goal.nf_enter begin fun gl ->
     let concl = Proofview.Goal.concl gl in
     let env = Proofview.Goal.env gl in
@@ -356,11 +357,19 @@ let refine_tac {Glob_term.closure=closure;term=term} =
       Pretyping.ltac_idents = closure.Glob_term.idents;
     } in
     let update evd = Pretyping.understand_ltac flags env evd lvar tycon term in
-    Tactics.New.refine ~unsafe:false update
+    let refine = Proofview.Refine.refine ~unsafe:false update in
+    if simple then refine
+    else refine <*>
+           Tactics.New.reduce_after_refine <*>
+           Proofview.shelve_unifiable
   end
 
 TACTIC EXTEND refine
-  [ "refine" uconstr(c) ] -> [  refine_tac c ]
+| [ "refine" uconstr(c) ] -> [ refine_tac false c ]
+END
+
+TACTIC EXTEND simple_refine
+| [ "simple" "refine" uconstr(c) ] -> [ refine_tac true c ]
 END
 
 (**********************************************************************)
@@ -862,6 +871,16 @@ END
 TACTIC EXTEND shelve_unifiable
 | [ "shelve_unifiable" ] ->
     [ Proofview.shelve_unifiable ]
+END
+
+(* Unshelves the goal shelved by the tactic. *)
+TACTIC EXTEND unshelve
+| [ "unshelve" tactic1(t) ] ->
+    [
+      Proofview.with_shelf (Tacinterp.eval_tactic t) >>= fun (gls, ()) ->
+      Proofview.Unsafe.tclGETGOALS >>= fun ogls ->
+      Proofview.Unsafe.tclSETGOALS (gls @ ogls)
+    ]
 END
 
 (* Command to add every unshelved variables to the focus *)

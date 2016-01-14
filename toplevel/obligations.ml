@@ -318,8 +318,9 @@ type program_info_aux = {
   prg_notations : notations ;
   prg_kind : definition_kind;
   prg_reduce : constr -> constr;
-  prg_hook : unit Lemmas.declaration_hook;
+  prg_hook : (Evd.evar_universe_context -> unit) Lemmas.declaration_hook;
   prg_opaque : bool;
+  prg_sign: named_context_val;
 }
 
 type program_info = program_info_aux Ephemeron.key
@@ -463,19 +464,6 @@ let map_replace k v m = ProgMap.add k (Ephemeron.create v) (ProgMap.remove k m)
 
 let map_keys m = ProgMap.fold (fun k _ l -> k :: l) m []
 
-let map_cardinal m =
-  let i = ref 0 in
-    ProgMap.iter (fun _ _ -> incr i) m;
-    !i
-
-exception Found of program_info
-
-let map_first m =
-  try
-    ProgMap.iter (fun _ v -> raise (Found v)) m;
-    assert(false)
-  with Found x -> x
-
 let from_prg : program_info ProgMap.t ref =
   Summary.ref ProgMap.empty ~name:"program-tcc-table"
 
@@ -521,16 +509,17 @@ let declare_definition prg =
   let nf = Universes.nf_evars_and_universes_opt_subst (fun x -> None)
     (Evd.evar_universe_context_subst prg.prg_ctx) in
   let opaque = prg.prg_opaque in
+  let fix_exn = Stm.get_fix_exn () in
   let ce =
-    definition_entry ~opaque ~types:(nf typ) ~poly:(pi2 prg.prg_kind)
-      ~univs:(Evd.evar_context_universe_context prg.prg_ctx) (nf body)
+    definition_entry ~fix_exn
+     ~opaque ~types:(nf typ) ~poly:(pi2 prg.prg_kind)
+     ~univs:(Evd.evar_context_universe_context prg.prg_ctx) (nf body)
   in
     progmap_remove prg;
     !declare_definition_ref prg.prg_name 
       prg.prg_kind ce prg.prg_implicits
-      (Lemmas.mk_hook (fun l r ->
-         Lemmas.call_hook (fun exn -> exn) prg.prg_hook l r; r))
-
+      (Lemmas.mk_hook (fun l r -> Lemmas.call_hook fix_exn prg.prg_hook l r prg.prg_ctx; r))
+      
 open Pp
 
 let rec lam_index n t acc =
@@ -554,7 +543,7 @@ let compute_possible_guardness_evidences (n,_) fixbody fixtype =
       let ctx = fst (decompose_prod_n_assum m fixtype) in
 	List.map_i (fun i _ -> i) 0 ctx
 
-let mk_proof c = ((c, Univ.ContextSet.empty), Declareops.no_seff)
+let mk_proof c = ((c, Univ.ContextSet.empty), Safe_typing.empty_private_constants)
 
 let declare_mutual_definition l =
   let len = List.length l in
@@ -594,6 +583,7 @@ let declare_mutual_definition l =
   in
   (* Declare the recursive definitions *)
   let ctx = Evd.evar_context_universe_context first.prg_ctx in
+  let fix_exn = Stm.get_fix_exn () in
   let kns = List.map4 (!declare_fix_ref ~opaque (local, poly, kind) ctx)
     fixnames fixdecls fixtypes fiximps in
     (* Declare notations *)
@@ -601,8 +591,8 @@ let declare_mutual_definition l =
     Declare.recursive_message (fixkind != IsCoFixpoint) indexes fixnames;
     let gr = List.hd kns in
     let kn = match gr with ConstRef kn -> kn | _ -> assert false in
-      Lemmas.call_hook (fun exn -> exn) first.prg_hook local gr;
-      List.iter progmap_remove l; kn
+    Lemmas.call_hook fix_exn first.prg_hook local gr first.prg_ctx;
+    List.iter progmap_remove l; kn
 
 let shrink_body c = 
   let ctx, b = decompose_lam c in
@@ -631,8 +621,9 @@ let declare_obligation prg obl body ty uctx =
 	if get_shrink_obligations () && not poly then
 	  shrink_body body else [], body, [||] 
       in
+      let body = ((body,Univ.ContextSet.empty),Safe_typing.empty_private_constants) in
       let ce = 
-        { const_entry_body = Future.from_val((body,Univ.ContextSet.empty),Declareops.no_seff);
+        { const_entry_body = Future.from_val ~fix_exn:(fun x -> x) body;
           const_entry_secctx = None;
 	  const_entry_type = if List.is_empty ctx then ty else None;
 	  const_entry_polymorphic = poly;
@@ -653,7 +644,7 @@ let declare_obligation prg obl body ty uctx =
 	    else
 	      Some (TermObl (it_mkLambda_or_LetIn (mkApp (mkConst constant, args)) ctx)) }
 
-let init_prog_info ?(opaque = false) n b t ctx deps fixkind notations obls impls kind reduce hook =
+let init_prog_info ?(opaque = false) sign n b t ctx deps fixkind notations obls impls kind reduce hook =
   let obls', b = 
     match b with
     | None ->
@@ -677,8 +668,24 @@ let init_prog_info ?(opaque = false) n b t ctx deps fixkind notations obls impls
       prg_obligations = (obls', Array.length obls');
       prg_deps = deps; prg_fixkind = fixkind ; prg_notations = notations ;
       prg_implicits = impls; prg_kind = kind; prg_reduce = reduce; 
-      prg_hook = hook;
-      prg_opaque = opaque; }
+      prg_hook = hook; prg_opaque = opaque;
+      prg_sign = sign }
+
+let map_cardinal m =
+  let i = ref 0 in
+  ProgMap.iter (fun _ v ->
+		if snd (Ephemeron.get v).prg_obligations > 0 then incr i) m;
+  !i
+
+exception Found of program_info
+
+let map_first m =
+  try
+    ProgMap.iter (fun _ v ->
+		  if snd (Ephemeron.get v).prg_obligations > 0 then
+		    raise (Found v)) m;
+    assert(false)
+  with Found x -> x
 
 let get_prog name =
   let prg_infos = !from_prg in
@@ -793,12 +800,12 @@ let solve_by_tac name evi t poly ctx =
   let (entry,_,ctx') = Pfedit.build_constant_by_tactic 
     id ~goal_kind:(goal_kind poly) ctx evi.evar_hyps concl (Tacticals.New.tclCOMPLETE t) in
   let env = Global.env () in
-  let entry = Term_typing.handle_entry_side_effects env entry in
-  let body, eff = Future.force entry.Entries.const_entry_body in
-  assert(Declareops.side_effects_is_empty eff);
-  let ctx' = Evd.merge_context_set Evd.univ_rigid (Evd.from_ctx ctx') (snd body) in
+  let entry = Safe_typing.inline_private_constants_in_definition_entry env entry in
+  let body, eff = Future.force entry.const_entry_body in
+  assert(Safe_typing.empty_private_constants = eff);
+  let ctx' = Evd.merge_context_set ~sideff:true Evd.univ_rigid (Evd.from_ctx ctx') (snd body) in
   Inductiveops.control_only_guard (Global.env ()) (fst body);
-  (fst body), entry.Entries.const_entry_type, Evd.evar_universe_context ctx'
+  (fst body), entry.const_entry_type, Evd.evar_universe_context ctx'
 
 let obligation_hook prg obl num auto ctx' _ gr =
   let obls, rem = prg.prg_obligations in
@@ -817,7 +824,9 @@ let obligation_hook prg obl num auto ctx' _ gr =
     if not (pi2 prg.prg_kind) (* Not polymorphic *) then
       (* The universe context was declared globally, we continue
          from the new global environment. *)
-      Evd.evar_universe_context (Evd.from_env (Global.env ()))
+      let evd = Evd.from_env (Global.env ()) in
+      let ctx' = Evd.merge_universe_subst evd (Evd.universe_subst (Evd.from_ctx ctx')) in
+        Evd.evar_universe_context ctx'
     else ctx'
   in
   let prg = { prg with prg_ctx = ctx' } in
@@ -848,9 +857,10 @@ let rec solve_obligation prg num tac =
   let obl = subst_deps_obl obls obl in
   let kind = kind_of_obligation (pi2 prg.prg_kind) obl.obl_status in
   let evd = Evd.from_ctx prg.prg_ctx in
+  let evd = Evd.update_sigma_env evd (Global.env ()) in
   let auto n tac oblset = auto_solve_obligations n ~oblset tac in
   let hook ctx = Lemmas.mk_hook (obligation_hook prg obl num auto ctx) in
-  let () = Lemmas.start_proof_univs obl.obl_name kind evd obl.obl_type hook in
+  let () = Lemmas.start_proof_univs ~sign:prg.prg_sign obl.obl_name kind evd obl.obl_type hook in
   let () = trace (str "Started obligation " ++ int user_num ++ str "  proof: " ++
             Printer.pr_constr_env (Global.env ()) Evd.empty obl.obl_type) in
   let _ = Pfedit.by (snd (get_default_tactic ())) in
@@ -884,17 +894,21 @@ and solve_obligation_by_tac prg obls i tac =
 		  | Some t -> t
 		  | None -> snd (get_default_tactic ())
 	    in
+	    let evd = Evd.from_ctx !prg.prg_ctx in
+	    let evd = Evd.update_sigma_env evd (Global.env ()) in
 	    let t, ty, ctx = 
 	      solve_by_tac obl.obl_name (evar_of_obligation obl) tac 
-	        (pi2 !prg.prg_kind) !prg.prg_ctx
+	        (pi2 !prg.prg_kind) (Evd.evar_universe_context evd)
 	    in
 	    let uctx = Evd.evar_context_universe_context ctx in
 	    let () = prg := {!prg with prg_ctx = ctx} in
 	    let def, obl' = declare_obligation !prg obl t ty uctx in
 	      obls.(i) <- obl';
 	      if def && not (pi2 !prg.prg_kind) then (
-		(* Declare the term constraints with the first obligation only *)
-		let ctx' = Evd.evar_universe_context (Evd.from_env (Global.env ())) in
+	        (* Declare the term constraints with the first obligation only *)
+	        let evd = Evd.from_env (Global.env ()) in
+	        let evd = Evd.merge_universe_subst evd (Evd.universe_subst (Evd.from_ctx ctx)) in
+		let ctx' = Evd.evar_universe_context evd in
 		  prg := {!prg with prg_ctx = ctx'});
 	      true
 	  else false
@@ -982,9 +996,10 @@ let show_term n =
 	    ++ Printer.pr_constr_env (Global.env ()) Evd.empty prg.prg_body)
 
 let add_definition n ?term t ctx ?(implicits=[]) ?(kind=Global,false,Definition) ?tactic
-    ?(reduce=reduce) ?(hook=Lemmas.mk_hook (fun _ _ -> ())) ?(opaque = false) obls =
+    ?(reduce=reduce) ?(hook=Lemmas.mk_hook (fun _ _ _ -> ())) ?(opaque = false) obls =
+  let sign = Decls.initialize_named_context_for_proof () in
   let info = str (Id.to_string n) ++ str " has type-checked" in
-  let prg = init_prog_info ~opaque n term t ctx [] None [] obls implicits kind reduce hook in
+  let prg = init_prog_info sign ~opaque n term t ctx [] None [] obls implicits kind reduce hook in
   let obls,_ = prg.prg_obligations in
   if Int.equal (Array.length obls) 0 then (
     Flags.if_verbose msg_info (info ++ str ".");
@@ -1000,11 +1015,12 @@ let add_definition n ?term t ctx ?(implicits=[]) ?(kind=Global,false,Definition)
 	| _ -> res)
 
 let add_mutual_definitions l ctx ?tactic ?(kind=Global,false,Definition) ?(reduce=reduce)
-    ?(hook=Lemmas.mk_hook (fun _ _ -> ())) ?(opaque = false) notations fixkind =
+    ?(hook=Lemmas.mk_hook (fun _ _ _ -> ())) ?(opaque = false) notations fixkind =
+  let sign = Decls.initialize_named_context_for_proof () in
   let deps = List.map (fun (n, b, t, imps, obls) -> n) l in
     List.iter
     (fun  (n, b, t, imps, obls) ->
-     let prg = init_prog_info ~opaque n (Some b) t ctx deps (Some fixkind)
+     let prg = init_prog_info sign ~opaque n (Some b) t ctx deps (Some fixkind)
        notations obls imps kind reduce hook 
      in progmap_add n (Ephemeron.create prg)) l;
     let _defined =

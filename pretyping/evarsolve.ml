@@ -42,21 +42,20 @@ let get_polymorphic_positions f =
         templ.template_param_levels)
   | _ -> assert false
 
-(**
-   forall A (l : list A) -> typeof A = Type i <= Datatypes.j -> i not refreshed
-   hd ?A (l : list t) -> A = t
+let refresh_level evd s =
+  match Evd.is_sort_variable evd s with
+  | None -> true
+  | Some l -> not (Evd.is_flexible_level evd l)
 
-*)
-let refresh_universes ?(inferred=false) ?(onlyalg=false) pbty env evd t =
+let refresh_universes ?(status=univ_rigid) ?(onlyalg=false) pbty env evd t =
   let evdref = ref evd in
   let modified = ref false in
-  let rec refresh dir t = 
+  let rec refresh status dir t = 
     match kind_of_term t with
     | Sort (Type u as s) when
       (match Univ.universe_level u with
-      | None -> true 
-      | Some l -> not onlyalg && Option.is_empty (Evd.is_sort_variable evd s)) ->
-    let status = if inferred then Evd.univ_flexible_alg else Evd.univ_flexible in
+      | None -> true
+      | Some l -> not onlyalg && refresh_level evd s) ->
     let s' = evd_comb0 (new_sort_variable status) evdref in
     let evd = 
       if dir then set_leq_sort env !evdref s' s
@@ -64,11 +63,11 @@ let refresh_universes ?(inferred=false) ?(onlyalg=false) pbty env evd t =
     in
       modified := true; evdref := evd; mkSort s'
     | Prod (na,u,v) -> 
-      mkProd (na,u,refresh dir v)
+      mkProd (na,u,refresh status dir v)
     | _ -> t
   (** Refresh the types of evars under template polymorphic references *)
   and refresh_term_evars onevars top t =
-    match kind_of_term t with
+    match kind_of_term (whd_evar !evdref t) with
     | App (f, args) when is_template_polymorphic env f ->
       let pos = get_polymorphic_positions f in
 	refresh_polymorphic_positions args pos
@@ -77,7 +76,7 @@ let refresh_universes ?(inferred=false) ?(onlyalg=false) pbty env evd t =
       Array.iter (refresh_term_evars onevars false) args
     | Evar (ev, a) when onevars ->
       let evi = Evd.find !evdref ev in
-      let ty' = refresh true evi.evar_concl in
+      let ty' = refresh univ_flexible true evi.evar_concl in
 	if !modified then 
 	  evdref := Evd.add !evdref ev {evi with evar_concl = ty'}
 	else ()
@@ -99,7 +98,7 @@ let refresh_universes ?(inferred=false) ?(onlyalg=false) pbty env evd t =
     if isArity t then
       (match pbty with
       | None -> t
-      | Some dir -> refresh dir t)
+      | Some dir -> refresh status dir t)
     else (refresh_term_evars false true t; t)
   in
     if !modified then !evdref, t' else !evdref, t
@@ -130,6 +129,8 @@ let add_conv_oriented_pb ?(tail=true) (pbty,env,t1,t2) evd =
 
 (* We retype applications to ensure the universe constraints are collected *)
 
+exception IllTypedInstance of env * types * types
+
 let recheck_applications conv_algo env evdref t =
   let rec aux env t =
     match kind_of_term t with
@@ -146,7 +147,7 @@ let recheck_applications conv_algo env evdref t =
 			     aux (succ i) (subst1 args.(i) codom)
 	     | UnifFailure (evd, reason) ->
 		Pretype_errors.error_cannot_unify env evd ~reason (argsty.(i), dom))
-	 | _ -> assert false
+	 | _ -> raise (IllTypedInstance (env, ty, argsty.(i)))
        else ()
      in aux 0 fty
     | _ ->
@@ -608,7 +609,8 @@ let materialize_evar define_fun env evd k (evk1,args1) ty_in_env =
       let id = next_name_away na avoid in
       let evd,t_in_sign =
         let s = Retyping.get_sort_of env evd t_in_env in
-        let evd,ty_t_in_sign = refresh_universes ~inferred:true (Some false) env evd (mkSort s) in
+        let evd,ty_t_in_sign = refresh_universes
+	 ~status:univ_flexible (Some false) env evd (mkSort s) in
         define_evar_from_virtual_equation define_fun env evd src t_in_env
           ty_t_in_sign sign filter inst_in_env in
       let evd,b_in_sign = match b with
@@ -626,7 +628,8 @@ let materialize_evar define_fun env evd k (evk1,args1) ty_in_env =
   in
   let evd,ev2ty_in_sign =
     let s = Retyping.get_sort_of env evd ty_in_env in
-    let evd,ty_t_in_sign = refresh_universes ~inferred:true (Some false) env evd (mkSort s) in
+    let evd,ty_t_in_sign = refresh_universes
+     ~status:univ_flexible (Some false) env evd (mkSort s) in
     define_evar_from_virtual_equation define_fun env evd src ty_in_env
       ty_t_in_sign sign2 filter2 inst2_in_env in
   let evd,ev2_in_sign =
@@ -1134,8 +1137,6 @@ let project_evar_on_evar force g env evd aliases k2 pbty (evk1,argsv1 as ev1) (e
   else
     raise (CannotProject (evd,ev1'))
 
-exception IllTypedInstance of env * types * types
-
 let check_evar_instance evd evk1 body conv_algo =
   let evi = Evd.find evd evk1 in
   let evenv = evar_env evi in
@@ -1149,10 +1150,19 @@ let check_evar_instance evd evk1 body conv_algo =
   | Success evd -> evd
   | UnifFailure _ -> raise (IllTypedInstance (evenv,ty,evi.evar_concl))
 
+let update_evar_source ev1 ev2 evd =
+  let loc, evs2 = evar_source ev2 evd in
+  match evs2 with
+  | (Evar_kinds.QuestionMark _ | Evar_kinds.ImplicitArg (_, _, false)) ->
+     let evi = Evd.find evd ev1 in
+     Evd.add evd ev1 {evi with evar_source = loc, evs2}
+  | _ -> evd
+  
 let solve_evar_evar_l2r force f g env evd aliases pbty ev1 (evk2,_ as ev2) =
   try
     let evd,body = project_evar_on_evar force g env evd aliases 0 pbty ev1 ev2 in
     let evd' = Evd.define evk2 body evd in
+    let evd' = update_evar_source (fst (destEvar body)) evk2 evd' in
       check_evar_instance evd' evk2 body g
   with EvarSolvedOnTheFly (evd,c) ->
     f env evd pbty ev2 c
@@ -1164,8 +1174,8 @@ let preferred_orientation evd evk1 evk2 =
   let _,src2 = (Evd.find_undefined evd evk2).evar_source in
   (* This is a heuristic useful for program to work *)
   match src1,src2 with
-  | Evar_kinds.QuestionMark _, _ -> true
-  | _,Evar_kinds.QuestionMark _ -> false
+  | (Evar_kinds.QuestionMark _ | Evar_kinds.ImplicitArg (_, _, false)) , _ -> true
+  | _, (Evar_kinds.QuestionMark _ | Evar_kinds.ImplicitArg (_, _, false)) -> false
   | _ -> true
 
 let solve_evar_evar_aux force f g env evd pbty (evk1,args1 as ev1) (evk2,args2 as ev2) =
@@ -1266,11 +1276,29 @@ let solve_candidates conv_algo env evd (evk,argsv) rhs =
       | [c,evd] ->
           (* solve_candidates might have been called recursively in the mean *)
           (* time and the evar been solved by the filtering process *)
-          if Evd.is_undefined evd evk then Evd.define evk c evd else evd
+         if Evd.is_undefined evd evk then
+	   let evd' = Evd.define evk c evd in
+	     check_evar_instance evd' evk c conv_algo
+	 else evd
       | l when List.length l < List.length l' ->
           let candidates = List.map fst l in
           restrict_evar evd evk None (UpdateWith candidates)
       | l -> evd
+
+let occur_evar_upto_types sigma n c =
+  let seen = ref Evar.Set.empty in
+  let rec occur_rec c = match kind_of_term c with
+    | Evar (sp,_) when Evar.equal sp n -> raise Occur
+    | Evar (sp,args as e) ->
+       if Evar.Set.mem sp !seen then
+         Array.iter occur_rec args
+       else (
+         seen := Evar.Set.add sp !seen;
+	 Option.iter occur_rec (existential_opt_value sigma e);
+	 occur_rec (existential_type sigma e))
+    | _ -> iter_constr occur_rec c
+  in
+  try occur_rec c; false with Occur -> true
 
 (* We try to instantiate the evar assuming the body won't depend
  * on arguments that are not Rels or Vars, or appearing several times
@@ -1459,7 +1487,7 @@ let rec invert_definition conv_algo choose env evd pbty (evk,argsv as ev) rhs =
 	  (recheck_applications conv_algo (evar_env evi) evdref t'; t')
 	else t'
   in (!evdref,body)
-
+     
 (* [define] tries to solve the problem "?ev[args] = rhs" when "?ev" is
  * an (uninstantiated) evar such that "hyps |- ?ev : typ". Otherwise said,
  * [define] tries to find an instance lhs such that
@@ -1484,7 +1512,7 @@ and evar_define conv_algo ?(choose=false) env evd pbty (evk,argsv as ev) rhs =
     if occur_meta body then raise MetaOccurInBodyInternal;
     (* invert_definition may have instantiate some evars of rhs with evk *)
     (* so we recheck acyclicity *)
-    if occur_evar evk body then raise (OccurCheckIn (evd',body));
+    if occur_evar_upto_types evd' evk body then raise (OccurCheckIn (evd',body));
     (* needed only if an inferred type *)
     let evd', body = refresh_universes pbty env evd' body in
 (* Cannot strictly type instantiations since the unification algorithm

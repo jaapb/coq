@@ -44,6 +44,20 @@ let test_lpar_id_coloneq =
 	      | _ -> err ())
 	| _ -> err ())
 
+(* Hack to recognize "(x)" *)
+let test_lpar_id_rpar =
+  Gram.Entry.of_parser "lpar_id_coloneq"
+    (fun strm ->
+      match get_tok (stream_nth 0 strm) with
+        | KEYWORD "(" ->
+            (match get_tok (stream_nth 1 strm) with
+              | IDENT _ ->
+                  (match get_tok (stream_nth 2 strm) with
+	            | KEYWORD ")" -> ()
+	            | _ -> err ())
+	      | _ -> err ())
+	| _ -> err ())
+
 (* idem for (x:=t) and (1:=t) *)
 let test_lpar_idnum_coloneq =
   Gram.Entry.of_parser "test_lpar_idnum_coloneq"
@@ -224,8 +238,9 @@ GEXTEND Gram
   ;
   induction_arg:
     [ [ n = natural -> (None,ElimOnAnonHyp n)
+      | test_lpar_id_rpar; c = constr_with_bindings ->
+        (Some false,induction_arg_of_constr c)
       | c = constr_with_bindings -> (None,induction_arg_of_constr c)
-      | "!"; c = constr_with_bindings -> (Some false,induction_arg_of_constr c)
     ] ]
   ;
   constr_with_bindings_arg:
@@ -296,11 +311,18 @@ GEXTEND Gram
       | "**" -> !@loc, IntroForthcoming false ]]
   ;
   simple_intropattern:
+    [ [ pat = simple_intropattern_closed;
+        l = LIST0 ["%"; c = operconstr LEVEL "0" -> c] ->
+          let loc0,pat = pat in
+          let f c pat =
+            let loc = Loc.merge loc0 (Constrexpr_ops.constr_loc c) in
+            IntroAction (IntroApplyOn (c,(loc,pat))) in
+          !@loc, List.fold_right f l pat ] ]
+  ;
+  simple_intropattern_closed:
     [ [ pat = or_and_intropattern -> !@loc, IntroAction (IntroOrAndPattern pat)
       | pat = equality_intropattern -> !@loc, IntroAction pat
       | "_" -> !@loc, IntroAction IntroWildcard 
-      | pat = simple_intropattern; "/"; c = constr ->
-          !@loc, IntroAction (IntroApplyOn (c,pat))
       | pat = naming_intropattern -> !@loc, IntroNaming pat ] ]
   ;
   simple_binding:
@@ -339,21 +361,6 @@ GEXTEND Gram
       | d = delta_flag -> all_with d
     ] ]
   ;
-  red_tactic:
-    [ [ IDENT "red" -> Red false
-      | IDENT "hnf" -> Hnf
-      | IDENT "simpl"; d = delta_flag; po = OPT ref_or_pattern_occ -> Simpl (all_with d,po)
-      | IDENT "cbv"; s = strategy_flag -> Cbv s
-      | IDENT "cbn"; s = strategy_flag -> Cbn s
-      | IDENT "lazy"; s = strategy_flag -> Lazy s
-      | IDENT "compute"; delta = delta_flag -> Cbv (all_with delta)
-      | IDENT "vm_compute"; po = OPT ref_or_pattern_occ -> CbvVm po
-      | IDENT "native_compute"; po = OPT ref_or_pattern_occ -> CbvNative po
-      | IDENT "unfold"; ul = LIST1 unfold_occ SEP "," -> Unfold ul
-      | IDENT "fold"; cl = LIST1 constr -> Fold cl
-      | IDENT "pattern"; pl = LIST1 pattern_occ SEP"," -> Pattern pl ] ]
-  ;
-  (* This is [red_tactic] including possible extensions *)
   red_expr:
     [ [ IDENT "red" -> Red false
       | IDENT "hnf" -> Hnf
@@ -414,7 +421,7 @@ GEXTEND Gram
       | -> [] ] ]
   ;
   in_hyp_as:
-    [ [ "in"; id = id_or_meta; ipat = as_ipat -> Some (None,id,ipat)
+    [ [ "in"; id = id_or_meta; ipat = as_ipat -> Some (id,ipat)
       | -> None ] ]
   ;
   orient:
@@ -451,16 +458,6 @@ GEXTEND Gram
   auto_using:
     [ [ "using"; l = LIST1 constr SEP "," -> l
       | -> [] ] ]
-  ;
-  trivial:
-    [ [ IDENT "trivial" -> Off
-      | IDENT "info_trivial" -> Info
-      | IDENT "debug"; IDENT "trivial" -> Debug ] ]
-  ;
-  auto:
-    [ [ IDENT "auto" -> Off
-      | IDENT "info_auto" -> Info
-      | IDENT "debug"; IDENT "auto" -> Debug ] ]
   ;
   eliminator:
     [ [ "using"; el = constr_with_bindings -> el ] ]
@@ -627,9 +624,18 @@ GEXTEND Gram
 	  TacAtom (!@loc, TacInductionDestruct(false,true,icl))
 
       (* Automation tactic *)
-      | d = trivial; lems = auto_using; db = hintbases -> TacAtom (!@loc, TacTrivial (d,lems,db))
-      | d = auto; n = OPT int_or_var; lems = auto_using; db = hintbases ->
-          TacAtom (!@loc, TacAuto (d,n,lems,db))
+      | IDENT "trivial"; lems = auto_using; db = hintbases ->
+          TacAtom (!@loc, TacTrivial (Off, lems, db))
+      | IDENT "info_trivial"; lems = auto_using; db = hintbases ->
+          TacAtom (!@loc, TacTrivial (Info, lems, db))
+      | IDENT "debug"; IDENT "trivial"; lems = auto_using; db = hintbases ->
+          TacAtom (!@loc, TacTrivial (Debug, lems, db))
+      | IDENT "auto"; n = OPT int_or_var; lems = auto_using; db = hintbases ->
+          TacAtom (!@loc, TacAuto (Off, n, lems, db))
+      | IDENT "info_auto"; n = OPT int_or_var; lems = auto_using; db = hintbases ->
+          TacAtom (!@loc, TacAuto (Info, n, lems, db))
+      | IDENT "debug"; IDENT "auto"; n = OPT int_or_var; lems = auto_using; db = hintbases ->
+          TacAtom (!@loc, TacAuto (Debug, n, lems, db))
 
       (* Context management *)
       | IDENT "clear"; "-"; l = LIST1 id_or_meta -> TacAtom (!@loc, TacClear (true, l))
@@ -677,7 +683,31 @@ GEXTEND Gram
 	    TacAtom (!@loc, TacInversion (InversionUsing (c,cl), hyp))
 
       (* Conversion *)
-      | r = red_tactic; cl = clause_dft_concl -> TacAtom (!@loc, TacReduce (r, cl))
+      | IDENT "red"; cl = clause_dft_concl ->
+          TacAtom (!@loc, TacReduce (Red false, cl))
+      | IDENT "hnf"; cl = clause_dft_concl ->
+          TacAtom (!@loc, TacReduce (Hnf, cl))
+      | IDENT "simpl"; d = delta_flag; po = OPT ref_or_pattern_occ; cl = clause_dft_concl ->
+          TacAtom (!@loc, TacReduce (Simpl (all_with d, po), cl))
+      | IDENT "cbv"; s = strategy_flag; cl = clause_dft_concl ->
+          TacAtom (!@loc, TacReduce (Cbv s, cl))
+      | IDENT "cbn"; s = strategy_flag; cl = clause_dft_concl ->
+          TacAtom (!@loc, TacReduce (Cbn s, cl))
+      | IDENT "lazy"; s = strategy_flag; cl = clause_dft_concl ->
+          TacAtom (!@loc, TacReduce (Lazy s, cl))
+      | IDENT "compute"; delta = delta_flag; cl = clause_dft_concl ->
+          TacAtom (!@loc, TacReduce (Cbv (all_with delta), cl))
+      | IDENT "vm_compute"; po = OPT ref_or_pattern_occ; cl = clause_dft_concl ->
+          TacAtom (!@loc, TacReduce (CbvVm po, cl))
+      | IDENT "native_compute"; po = OPT ref_or_pattern_occ; cl = clause_dft_concl ->
+          TacAtom (!@loc, TacReduce (CbvNative po, cl))
+      | IDENT "unfold"; ul = LIST1 unfold_occ SEP ","; cl = clause_dft_concl ->
+          TacAtom (!@loc, TacReduce (Unfold ul, cl))
+      | IDENT "fold"; l = LIST1 constr; cl = clause_dft_concl ->
+          TacAtom (!@loc, TacReduce (Fold l, cl))
+      | IDENT "pattern"; pl = LIST1 pattern_occ SEP","; cl = clause_dft_concl ->
+          TacAtom (!@loc, TacReduce (Pattern pl, cl))
+
       (* Change ne doit pas s'appliquer dans un Definition t := Eval ... *)
       | IDENT "change"; (oc,c) = conversion; cl = clause_dft_concl ->
 	  let p,cl = merge_occurrences (!@loc) cl oc in

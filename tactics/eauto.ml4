@@ -33,7 +33,8 @@ DECLARE PLUGIN "eauto"
 
 let eauto_unif_flags = auto_flags_of_state full_transparent_state
 
-let e_give_exact ?(flags=eauto_unif_flags) c gl = let t1 = (pf_unsafe_type_of gl c) and t2 = pf_concl gl in
+let e_give_exact ?(flags=eauto_unif_flags) c gl =
+  let t1 = (pf_unsafe_type_of gl c) and t2 = pf_concl gl in
   if occur_existential t1 || occur_existential t2 then
      tclTHEN (Proofview.V82.of_tactic (Clenvtac.unify ~flags t1)) (exact_no_check c) gl
   else Proofview.V82.of_tactic (exact_check c) gl
@@ -94,7 +95,7 @@ let out_term = function
   | IsGlobRef gr -> fst (Universes.fresh_global_instance (Global.env ()) gr)
 
 let prolog_tac l n gl =
-  let l = List.map (fun x -> out_term (pf_apply (prepare_hint false) gl x)) l in
+  let l = List.map (fun x -> out_term (pf_apply (prepare_hint false (false,true)) gl x)) l in
   let n =
     match n with
       | ArgArg n -> n
@@ -116,14 +117,17 @@ open Unification
 (***************************************************************************)
 
 let priority l = List.map snd (List.filter (fun (pr,_) -> Int.equal pr 0) l)
-
-let unify_e_resolve poly flags (c,clenv) gls =
-  let clenv', subst = if poly then Clenv.refresh_undefined_univs clenv 
-  else clenv, Univ.empty_level_subst in
-  let clenv' = connect_clenv gls clenv' in
-  let clenv' = clenv_unique_resolver ~flags clenv' gls in
-    tclTHEN (Refiner.tclEVARUNIVCONTEXT (Evd.evar_universe_context clenv'.evd))
-      (Proofview.V82.of_tactic (Tactics.Simple.eapply (Vars.subst_univs_level_constr subst c))) gls
+			  
+let unify_e_resolve poly flags (c,clenv) =
+  Proofview.Goal.nf_enter begin
+      fun gl ->
+      let clenv', c = connect_hint_clenv poly c clenv gl in
+      Proofview.V82.tactic
+	(fun gls ->
+	 let clenv' = clenv_unique_resolver ~flags clenv' gls in
+	 tclTHEN (Refiner.tclEVARUNIVCONTEXT (Evd.evar_universe_context clenv'.evd))
+		 (Proofview.V82.of_tactic (Tactics.Simple.eapply c)) gls)
+    end
 
 let hintmap_of hdc concl =
   match hdc with
@@ -134,6 +138,7 @@ let hintmap_of hdc concl =
    (* FIXME: should be (Hint_db.map_eauto hdc concl db) *)
 
 let e_exact poly flags (c,clenv) =
+  let (c, _, _) = c in
   let clenv', subst = 
     if poly then Clenv.refresh_undefined_univs clenv 
     else clenv, Univ.empty_level_subst
@@ -161,13 +166,17 @@ and e_my_find_search db_list local_db hdc concl =
   in
   let tac_of_hint =
     fun (st, {pri = b; pat = p; code = t; poly = poly}) ->
+      let b = match Hints.repr_hint t with
+      | Unfold_nth _ -> 1
+      | _ -> b
+      in
       (b,
         let tac = function
         | Res_pf (term,cl) -> unify_resolve poly st (term,cl)
-        | ERes_pf (term,cl) -> Proofview.V82.tactic (unify_e_resolve poly st (term,cl))
+        | ERes_pf (term,cl) -> unify_e_resolve poly st (term,cl)
         | Give_exact (c,cl) -> Proofview.V82.tactic (e_exact poly st (c,cl))
         | Res_pf_THEN_trivial_fail (term,cl) ->
-          Proofview.V82.tactic (tclTHEN (unify_e_resolve poly st (term,cl))
+          Proofview.V82.tactic (tclTHEN (Proofview.V82.of_tactic (unify_e_resolve poly st (term,cl)))
             (e_trivial_fail_db db_list local_db))
         | Unfold_nth c -> Proofview.V82.tactic (reduce (Unfold [AllOccurrences,c]) onConcl)
         | Extern tacast -> conclPattern concl p tacast
@@ -200,7 +209,8 @@ type search_state = {
   last_tactic : std_ppcmds Lazy.t;
   dblist : hint_db list;
   localdb :  hint_db list;
-  prev : prev_search_state
+  prev : prev_search_state;
+  local_lemmas : Evd.open_constr list;
 }
 
 and prev_search_state = (* for info eauto *)
@@ -239,8 +249,8 @@ module SearchProblem = struct
     let d = s'.depth - s.depth in
     let d' = Int.compare s.priority s'.priority in
     let nbgoals s = List.length (sig_it s.tacres) in
-    if not (Int.equal d' 0) then d'
-    else if not (Int.equal d 0) then d
+    if not (Int.equal d 0) then d
+    else if not (Int.equal d' 0) then d'
     else Int.compare (nbgoals s) (nbgoals s')
 
   let branching s =
@@ -259,7 +269,7 @@ module SearchProblem = struct
 	List.map (fun (res, cost, pp) -> { depth = s.depth; priority = cost; tacres = res;
 				    last_tactic = pp; dblist = s.dblist;
 				    localdb = List.tl s.localdb;
-				    prev = ps}) l
+				    prev = ps; local_lemmas = s.local_lemmas}) l
       in
       let intro_tac =
         let l = filter_tactics s.tacres [Proofview.V82.of_tactic Tactics.intro, (-1), lazy (str "intro")] in
@@ -273,7 +283,8 @@ module SearchProblem = struct
 		  hintl (List.hd s.localdb) in
 	     { depth = s.depth; priority = cost; tacres = lgls;
 	       last_tactic = pp; dblist = s.dblist;
-	       localdb = ldb :: List.tl s.localdb; prev = ps })
+	       localdb = ldb :: List.tl s.localdb; prev = ps;
+               local_lemmas = s.local_lemmas})
 	  l
       in
       let rec_tacs =
@@ -285,7 +296,8 @@ module SearchProblem = struct
 	     let nbgl' = List.length (sig_it lgls) in
 	     if nbgl' < nbgl then
 	       { depth = s.depth; priority = cost; tacres = lgls; last_tactic = pp;
-                  prev = ps; dblist = s.dblist; localdb = List.tl s.localdb }
+                  prev = ps; dblist = s.dblist; localdb = List.tl s.localdb;
+                  local_lemmas = s.local_lemmas }
 	     else
 	       let newlocal = 
 		 let hyps = pf_hyps g in
@@ -293,12 +305,13 @@ module SearchProblem = struct
 		     let gls = {Evd.it = gl; sigma = lgls.Evd.sigma } in
 		     let hyps' = pf_hyps gls in
 		       if hyps' == hyps then List.hd s.localdb
-		       else make_local_hint_db (pf_env gls) (project gls) ~ts:full_transparent_state true [])
+		       else make_local_hint_db (pf_env gls) (project gls) ~ts:full_transparent_state true s.local_lemmas)
 		     (List.firstn ((nbgl'-nbgl) + 1) (sig_it lgls))
 	       in
 		 { depth = pred s.depth; priority = cost; tacres = lgls;
 		   dblist = s.dblist; last_tactic = pp; prev = ps;
-		   localdb = newlocal @ List.tl s.localdb })
+		   localdb = newlocal @ List.tl s.localdb;
+                   local_lemmas = s.local_lemmas })
 	  l
       in
       List.sort compare (assumption_tacs @ intro_tac @ rec_tacs)
@@ -363,7 +376,7 @@ let pr_info dbg s =
 
 (** Eauto main code *)
 
-let make_initial_state dbg n gl dblist localdb =
+let make_initial_state dbg n gl dblist localdb lems =
   { depth = n;
     priority = 0;
     tacres = tclIDTAC gl;
@@ -371,6 +384,7 @@ let make_initial_state dbg n gl dblist localdb =
     dblist = dblist;
     localdb = [localdb];
     prev = if dbg == Info then Init else Unknown;
+    local_lemmas = lems;
   }
 
 let e_search_auto debug (in_depth,p) lems db_list gl =
@@ -384,7 +398,7 @@ let e_search_auto debug (in_depth,p) lems db_list gl =
   in
   try
     pr_dbg_header d;
-    let s = tac (make_initial_state d p gl db_list local_db) in
+    let s = tac (make_initial_state d p gl db_list local_db lems) in
     pr_info d s;
     s.tacres
   with Not_found ->
@@ -622,12 +636,7 @@ TACTIC EXTEND convert_concl_no_check
 | ["convert_concl_no_check" constr(x) ] -> [ convert_concl_no_check x DEFAULTcast ]
 END
 
-
-let pr_hints_path_atom prc _ _ a =
-  match a with
-  | PathAny -> str"."
-  | PathHints grs ->
-    pr_sequence Printer.pr_global grs
+let pr_hints_path_atom _ _ _ = Hints.pp_hints_path_atom
 
 ARGUMENT EXTEND hints_path_atom
   TYPED AS hints_path_atom
@@ -636,15 +645,7 @@ ARGUMENT EXTEND hints_path_atom
 | [ "*" ] -> [ PathAny ]
 END
 
-let pr_hints_path prc prx pry c =
-  let rec aux = function
-  | PathAtom a -> pr_hints_path_atom prc prx pry a
-  | PathStar p -> str"(" ++ aux p ++ str")*"
-  | PathSeq (p, p') -> aux p ++ spc () ++ aux p'
-  | PathOr (p, p') -> str "(" ++ aux p ++ str"|" ++ aux p' ++ str")"
-  | PathEmpty -> str"ø"
-  | PathEpsilon -> str"ε"
-  in aux c
+let pr_hints_path prc prx pry c = Hints.pp_hints_path c
 
 ARGUMENT EXTEND hints_path
   TYPED AS hints_path

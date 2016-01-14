@@ -69,7 +69,7 @@ Section Facts.
   Variable A : Type.
 
 
-  (** *** Genereric facts *)
+  (** *** Generic facts *)
 
   (** Discrimination *)
   Theorem nil_cons : forall (x:A) (l:list A), [] <> x :: l.
@@ -622,9 +622,9 @@ Section Elts.
   Qed.
 
 
-  (****************************************)
-  (** ** Counting occurences of a element *)
-  (****************************************)
+  (******************************************)
+  (** ** Counting occurrences of an element *)
+  (******************************************)
 
   Fixpoint count_occ (l : list A) (x : A) : nat :=
     match l with
@@ -970,6 +970,7 @@ Section Map.
   Lemma in_flat_map : forall (f:A->list B)(l:list A)(y:B),
     In y (flat_map f l) <-> exists x, In x l /\ In y (f x).
   Proof using A B.
+    clear Hfinjective.
     induction l; simpl; split; intros.
     contradiction.
     destruct H as (x,(H,_)); contradiction.

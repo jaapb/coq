@@ -219,8 +219,10 @@ difference: the user can leave some holes (denoted by \texttt{\_} or
 {\tt (\_:\type)}) in the term. {\tt refine} will generate as
 many subgoals as there are holes in the term. The type of holes must be
 either synthesized by the system or declared by an
-explicit cast like \verb|(_:nat->Prop)|. This low-level
-tactic can be useful to advanced users.
+explicit cast like \verb|(_:nat->Prop)|. Any subgoal that occurs in other
+subgoals is automatically shelved, as if calling {\tt shelve\_unifiable}
+(see Section~\ref{shelve}).
+This low-level tactic can be useful to advanced users.
 
 \Example
 
@@ -255,6 +257,13 @@ Defined.
   there is a hole in the term you gave
   which type cannot be inferred. Put a cast around it.
 \end{ErrMsgs}
+
+\begin{Variants}
+\item {\tt simple refine \term}\tacindex{simple refine}
+
+  This tactic behaves like {\tt refine}, but it does not shelve any
+  subgoal. It does not perform any beta-reduction either.
+\end{Variants}
 
 \subsection{\tt apply \term}
 \tacindex{apply}
@@ -813,7 +822,7 @@ either:
   \item the pattern \texttt{?\ident}
   \item an identifier
   \end{itemize}
-\item a {\em destructing introduction pattern} which itself classifies into:
+\item an {\em action introduction pattern} which itself classifies into:
   \begin{itemize}
   \item a {\em disjunctive/conjunctive introduction pattern}, i.e. either one of:
     \begin{itemize}
@@ -828,7 +837,9 @@ either:
     \item a pattern for decomposing an equality: {\tt [= $p_1$ \dots\ $p_n$]}
     \item the rewriting orientations: {\tt ->} or {\tt <-}
     \end{itemize}
-  \item the on-the-fly application of a lemma: $p${\tt /{\term}}
+  \item the on-the-fly application of lemmas: $p${\tt \%{\term$_1$}}
+    \ldots {\tt \%{\term$_n$}} where $p$ itself is not a pattern for
+    on-the-fly application of lemmas (note: syntax is in experimental stage)
   \end{itemize}
 \item the wildcard: {\tt \_}
 \end{itemize}
@@ -853,16 +864,17 @@ introduction pattern~$p$:
   expects the product to be over an inductive type
   whose number of constructors is $n$ (or more generally over a type
   of conclusion an inductive type built from $n$ constructors,
-  e.g. {\tt C -> A\textbackslash/B if $n=2$}): it destructs the introduced
+  e.g. {\tt C -> A\textbackslash/B} with $n=2$ since {\tt
+    A\textbackslash/B} has 2 constructors): it destructs the introduced
   hypothesis as {\tt destruct} (see Section~\ref{destruct}) would and
   applies on each generated subgoal the corresponding tactic;
   \texttt{intros}~$p_{i1}$ {\ldots} $p_{im_i}$; if the disjunctive
-  pattern is part of a sequence of patterns and is not the last
-  pattern of the sequence, then {\Coq} completes the pattern so that all
-  the argument of the constructors of the inductive type are
-  introduced (for instance, the list of patterns {\tt [$\;$|$\;$] H}
-  applied on goal {\tt forall x:nat, x=0 -> 0=x} behaves the same as
-  the list of patterns {\tt [$\,$|$\,$?$\,$] H});
+  pattern is part of a sequence of patterns, then {\Coq} completes the
+  pattern so that all the arguments of the constructors of the
+  inductive type are introduced (for instance, the list of patterns
+  {\tt [$\;$|$\;$] H} applied on goal {\tt forall x:nat, x=0 -> 0=x}
+  behaves the same as the list of patterns {\tt [$\,$|$\,$?$\,$] H},
+  up to one exception explained in the Remark below);
 \item introduction over a conjunction of patterns {\tt ($p_1$, \ldots,
   $p_n$)} expects the goal to be a product over an inductive type $I$ with a
   single constructor that itself has at least $n$ arguments: it
@@ -876,10 +888,10 @@ introduction pattern~$p$:
   {\tt ($p_1$,(\ldots,(\dots,$p_n$)\ldots))}; it expects the
   hypothesis to be a sequence of right-associative binary inductive
   constructors such as {\tt conj} or {\tt ex\_intro}; for instance, an
-  hypothesis with type {\tt A\verb|/\|exists x, B\verb|/\|C\verb|/\|D} can be
+  hypothesis with type {\tt A\verb|/\|(exists x, B\verb|/\|C\verb|/\|D)} can be
   introduced via pattern {\tt (a \& x \& b \& c \& d)};
 \item if the product is over an equality type, then a pattern of the
-  form {\tt [=$p_{1}$ \dots\ $p_n$]} applies either {\tt injection}
+  form {\tt [= $p_{1}$ \dots\ $p_n$]} applies either {\tt injection}
   (see Section~\ref{injection}) or {\tt discriminate} (see
   Section~\ref{discriminate}) instead of {\tt destruct}; if {\tt
     injection} is applicable, the patterns $p_1$, \ldots, $p_n$ are
@@ -896,9 +908,10 @@ introduction pattern~$p$:
   itself is erased; if the term to substitute is a variable, it is
   substituted also in the context of goal and the variable is removed
   too;
-\item introduction over a pattern $p${\tt /{\term}} first applies
-  {\term} on the hypothesis to be introduced (as in {\tt apply
-  }{\term} {\tt in}), prior to the application of the introduction
+\item introduction over a pattern $p${\tt \%{\term$_1$}} \ldots {\tt
+  \%{\term$_n$}} first applies {\term$_1$},\ldots, {\term$_n$} on the
+  hypothesis to be introduced (as in {\tt apply }{\term}$_1$, \ldots,
+  {\term}$_n$ {\tt in}) prior to the application of the introduction
   pattern $p$;
 \item introduction on the wildcard depends on whether the product is
   dependent or not: in the non-dependent case, it erases the
@@ -938,6 +951,7 @@ Abort.
 
 \Rem {\tt intros $p_1~\ldots~p_n$} is not fully equivalent to
 \texttt{intros $p_1$;\ldots; intros $p_n$} for the following reasons:
+\label{bracketing-last}
 \begin{itemize}
 \item A wildcard pattern never succeeds when applied isolated on a
   dependent product, while it succeeds as part of a list of
@@ -958,6 +972,13 @@ Show 2.
 \end{coq_example}
 
 \end{itemize}
+
+This later behavior can be avoided by setting the following option:
+
+\begin{quote}
+\optindex{Bracketing Last Introduction Pattern}
+{\tt Set Bracketing Last Introduction Pattern}
+\end{quote}
 
 \subsection{\tt clear \ident}
 \tacindex{clear}
@@ -1456,6 +1477,24 @@ a hypothesis or in the body or the type of a local definition.
 
 \end{Variants}
 
+\subsection{\tt admit}
+\tacindex{admit}
+\tacindex{give\_up}
+\label{admit}
+
+The {\tt admit} tactic allows temporarily skipping a subgoal so as to
+progress further in the rest of the proof.  A proof containing
+admitted goals cannot be closed with {\tt Qed} but only with
+{\tt Admitted}.
+
+\begin{Variants}
+
+  \item {\tt give\_up}
+
+    Synonym of {\tt admit}.
+
+\end{Variants}
+
 \subsection{\tt absurd \term}
 \tacindex{absurd}
 \label{absurd}
@@ -1528,24 +1567,26 @@ for each possible form of {\term}, i.e. one for each constructor of
 the inductive or co-inductive type. Unlike {\tt induction}, no
 induction hypothesis is generated by {\tt destruct}.
 
-If the argument is dependent in either the conclusion or some
-hypotheses of the goal, the argument is replaced by the appropriate
-constructor form in each of the resulting subgoals, thus performing
-case analysis. If non-dependent, the tactic simply exposes the
-inductive or co-inductive structure of the argument.
-
 There are special cases:
 
 \begin{itemize}
 
 \item If {\term} is an identifier {\ident} denoting a quantified
-variable of the conclusion of the goal, then {\tt destruct {\ident}}
-behaves as {\tt intros until {\ident}; destruct {\ident}}.
+  variable of the conclusion of the goal, then {\tt destruct {\ident}}
+  behaves as {\tt intros until {\ident}; destruct {\ident}}. If
+  {\ident} is not anymore dependent in the goal after application of
+  {\tt destruct}, it is erased (to avoid erasure, use
+  parentheses, as in {\tt destruct ({\ident})}).
 
 \item If {\term} is a {\num}, then {\tt destruct {\num}} behaves as
 {\tt intros until {\num}} followed by {\tt destruct} applied to the
 last introduced hypothesis. Remark: For destruction of a numeral, use
 syntax {\tt destruct ({\num})} (not very interesting anyway).
+
+\item In case {\term} is an hypothesis {\ident} of the context,
+  and {\ident} is not anymore dependent in the goal after
+  application of {\tt destruct}, it is erased (to avoid erasure, use
+  parentheses, as in {\tt destruct ({\ident})}).
 
 \item The argument {\term} can also be a pattern of which holes are
   denoted by ``\_''. In this case, the tactic checks that all subterms
@@ -1623,14 +1664,6 @@ syntax {\tt destruct ({\num})} (not very interesting anyway).
   They combine the effects of the {\tt with}, {\tt as}, {\tt eqn:}, {\tt using},
   and {\tt in} clauses.
 
-\item{\tt destruct !{\ident}}
-
-  This is a case when the destructed term is an hypothesis of the
-  context. The ``!'' modifier tells to keep the hypothesis in the
-  context after destruction.
-
-  This applies also to the other form of {\tt destruct} and {\tt edestruct}.
-
 \item{\tt case \term}\label{case}\tacindex{case}
 
   The tactic {\tt case} is a more basic tactic to perform case
@@ -1696,13 +1729,21 @@ There are particular cases:
 \begin{itemize}
 
 \item If {\term} is an identifier {\ident} denoting a quantified
-variable of the conclusion of the goal, then {\tt induction {\ident}}
-behaves as {\tt intros until {\ident}; induction {\ident}}.
+  variable of the conclusion of the goal, then {\tt induction
+    {\ident}} behaves as {\tt intros until {\ident}; induction
+    {\ident}}.  If {\ident} is not anymore dependent in the goal
+  after application of {\tt induction}, it is erased (to avoid
+  erasure, use parentheses, as in {\tt induction ({\ident})}).
 
 \item If {\term} is a {\num}, then {\tt induction {\num}} behaves as
 {\tt intros until {\num}} followed by {\tt induction} applied to the
 last introduced hypothesis. Remark: For simple induction on a numeral,
 use syntax {\tt induction ({\num})} (not very interesting anyway).
+
+\item In case {\term} is an hypothesis {\ident} of the context,
+  and {\ident} is not anymore dependent in the goal after
+  application of {\tt induction}, it is erased (to avoid erasure, use
+  parentheses, as in {\tt induction ({\ident})}).
 
 \item The argument {\term} can also be a pattern of which holes are
   denoted by ``\_''. In this case, the tactic checks that all subterms
@@ -1817,15 +1858,6 @@ Show 2.
   These are the most general forms of {\tt induction} and {\tt
   einduction}.  It combines the effects of the {\tt with}, {\tt as}, %%{\tt eqn:},
   {\tt using}, and {\tt in} clauses.
-
-\item{\tt induction !{\ident}}
-
-  This is a case when the term on which to apply induction is an
-  hypothesis of the context. The ``!'' modifier tells to keep the
-  hypothesis in the context after induction.
-
-  This applies also to the other form of {\tt induction} and {\tt
-    einduction}.
 
 \item {\tt elim \term}\label{elim}
 
@@ -3559,7 +3591,7 @@ The hints for \texttt{auto} and \texttt{eauto} are stored in
 databases.  Each database maps head symbols to a list of hints. One can
 use the command \texttt{Print Hint \ident} to display the hints
 associated to the head symbol \ident{} (see \ref{PrintHint}). Each
-hint has a cost that is an nonnegative integer, and an optional pattern.
+hint has a cost that is a nonnegative integer, and an optional pattern.
 The hints with lower cost are tried first. A hint is tried by
 \texttt{auto} when the conclusion of the current goal
 matches its pattern or when it has no pattern.
@@ -3776,7 +3808,7 @@ Hint Extern 4 (~(_ = _)) => discriminate.
   with hints with a cost less than 4.
 
   One can even use some sub-patterns of the pattern in the tactic
-  script. A sub-pattern is a question mark followed by an ident, like
+  script. A sub-pattern is a question mark followed by an identifier, like
   \texttt{?X1} or \texttt{?X2}. Here is an example:
 
 % Require EqDecide.
@@ -3788,11 +3820,46 @@ Hint Extern 5   ({?X1 = ?X2} + {?X1 <> ?X2}) =>
  generalize X1, X2; decide equality : eqdec.
 Goal
 forall a b:list (nat * nat), {a = b} + {a <> b}.
-info_auto with eqdec.
+Info 1 auto with eqdec.
 \end{coq_example}
 \begin{coq_eval}
 Abort.
 \end{coq_eval}
+
+\item \texttt{Cut} {\textit{regexp}}
+\label{HintCut}
+\comindex{Hint Cut}
+
+  \textit{Warning:} these hints currently only apply to typeclass proof search and
+  the \texttt{typeclasses eauto} tactic.
+
+  This command can be used to cut the proof-search tree according to a
+  regular expression matching paths to be cut. The grammar for regular
+  expressions is the following:
+\[\begin{array}{lcll}
+  e & ::= & \ident & \text{ hint or instance identifier } \\
+  & & \texttt{*} & \text{ any hint } \\
+  & & e | e' & \text{ disjunction } \\
+  & & e ; e' & \text{ sequence } \\
+  & & ! e & \text{ Kleene star } \\
+  & & \texttt{emp} & \text{ empty } \\
+  & & \texttt{eps} & \text{ epsilon } \\
+  & & \texttt{(} e \texttt{)} & 
+\end{array}\]
+
+The \texttt{emp} regexp does not match any search path while
+\texttt{eps} matches the empty path. During proof search, the path of
+successive successful hints on a search branch is recorded, as a list of
+identifiers for the hints (note \texttt{Hint Extern}'s do not have an
+associated identifier). Before applying any hint $\ident$ the current
+path $p$ extended with $\ident$ is matched against the current cut
+expression $c$ associated to the hint database. If matching succeeds,
+the hint is \emph{not} applied. The semantics of \texttt{Hint Cut} $e$
+is to set the cut expression to $c | e$, the initial cut expression
+being \texttt{emp}.
+
+
+
 
 \end{itemize}
 
@@ -4082,6 +4149,7 @@ The tactic {\tt exists (n // m)} did not fail. The hole was solved by
 
 \subsection{\tt tauto}
 \tacindex{tauto}
+\tacindex{dtauto}
 \label{tauto}
 
 This tactic implements a decision procedure for intuitionistic propositional
@@ -4130,8 +4198,21 @@ Abort.
 because \verb=(forall x:nat, ~ A -> P x)= cannot be treated as atomic and an
 instantiation of \verb=x= is necessary.
 
+\begin{Variants}
+
+\item {\tt dtauto}
+
+  While {\tt tauto} recognizes inductively defined connectives
+  isomorphic to the standard connective {\tt and}, {\tt prod}, {\tt
+    or}, {\tt sum}, {\tt False}, {\tt Empty\_set}, {\tt unit}, {\tt
+    True}, {\tt dtauto} recognizes also all inductive types with
+  one constructors and no indices, i.e. record-style connectives.
+
+\end{Variants}
+
 \subsection{\tt intuition \tac}
 \tacindex{intuition}
+\tacindex{dintuition}
 \label{intuition}
 
 The tactic \texttt{intuition} takes advantage of the search-tree built
@@ -4164,7 +4245,48 @@ incompatibilities.
 \item {\tt intuition}
 
   Is equivalent to {\tt intuition auto with *}.
+
+\item {\tt dintuition}
+
+  While {\tt intuition} recognizes inductively defined connectives
+  isomorphic to the standard connective {\tt and}, {\tt prod}, {\tt
+    or}, {\tt sum}, {\tt False}, {\tt Empty\_set}, {\tt unit}, {\tt
+    True}, {\tt dintuition} recognizes also all inductive types with
+  one constructors and no indices, i.e. record-style connectives.
+
 \end{Variants}
+
+\optindex{Intuition Negation Unfolding}
+\optindex{Intuition Iff Unfolding}
+
+Some aspects of the tactic {\tt intuition} can be
+controlled using options. To avoid that inner negations which do not
+need to be unfolded are unfolded, use:
+
+\begin{quote}
+{\tt Unset Intuition Negation Unfolding}
+\end{quote}
+
+To do that all negations of the goal are unfolded even inner ones
+(this is the default), use:
+
+\begin{quote}
+{\tt Set Intuition Negation Unfolding}
+\end{quote}
+
+To avoid that inner occurrence of {\tt iff} which do not need to be
+unfolded are unfolded (this is the default), use:
+
+\begin{quote}
+{\tt Unset Intuition Iff Unfolding}
+\end{quote}
+
+To do that all negations of the goal are unfolded even inner ones
+(this is the default), use:
+
+\begin{quote}
+{\tt Set Intuition Iff Unfolding}
+\end{quote}
 
 % En attente d'un moyen de valoriser les fichiers de demos
 %\SeeAlso file \texttt{contrib/Rocq/DEMOS/Demo\_tauto.v}
@@ -4641,7 +4763,7 @@ Use \texttt{classical\_right} to prove the right part of the disjunction with th
 %% procedure for first-order intuitionistic logic implemented in {\em
 %%   NuPRL}\cite{Kre02}.
 
-%% Search may optionnaly be bounded by a multiplicity parameter
+%% Search may optionally be bounded by a multiplicity parameter
 %% indicating how many (at most) copies of a formula may be used in
 %% the proof process, its absence may lead to non-termination of the tactic.
 
@@ -4933,8 +5055,8 @@ back into focus with the command {\tt Unshelve} (Section~\ref{unshelve}).
 \begin{Variants}
   \item \texttt{shelve\_unifiable}\tacindex{shelve\_unifiable}
 
-    Shelves only these goals under focused which are mentioned in other goals.
-    Goals which appear in the type of other goals can be solve by unification.
+    Shelves only the goals under focus that are mentioned in other goals.
+    Goals that appear in the type of other goals can be solved by unification.
 
 \Example
 \begin{coq_example}

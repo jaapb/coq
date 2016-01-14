@@ -884,10 +884,10 @@ let merge_inductive (ind1: inductive) (ind2: inductive)
   let indexpr = glob_constr_list_to_inductive_expr prms1 prms2 mib1 mib2 shift_prm rawlist in
   (* Declare inductive *)
   let indl,_,_ = Command.extract_mutual_inductive_declaration_components [(indexpr,[])] in
-  let mie,impls = Command.interp_mutual_inductive indl [] 
+  let mie,pl,impls = Command.interp_mutual_inductive indl []
           false (*FIXMEnon-poly *) false (* means not private *) Decl_kinds.Finite (* means: not coinductive *) in
   (* Declare the mutual inductive block with its associated schemes *)
-  ignore (Command.declare_mutual_inductive_with_eliminations mie impls)
+  ignore (Command.declare_mutual_inductive_with_eliminations mie pl impls)
 
 
 (* Find infos on identifier id. *)
@@ -902,7 +902,7 @@ let find_Function_infos_safe (id:Id.t): Indfun_common.function_info =
 
 (** [merge id1 id2 args1 args2 id] builds and declares a new inductive
     type called [id], representing the merged graphs of both graphs
-    [ind1] and [ind2]. identifiers occuring in both arrays [args1] and
+    [ind1] and [ind2]. identifiers occurring in both arrays [args1] and
     [args2] are considered linked (i.e. are the same variable) in the
     new graph.
 

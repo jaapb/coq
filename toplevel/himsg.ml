@@ -783,7 +783,7 @@ let explain_pretype_error env sigma err =
     let {uj_val = c; uj_type = actty} = j in
     let (env, c, actty, expty), e = contract3' env c actty t e in
     let j = {uj_val = c; uj_type = actty} in
-    explain_actual_type env sigma j t (Some e)
+    explain_actual_type env sigma j expty (Some e)
   | UnifOccurCheck (ev,rhs) -> explain_occur_check env sigma ev rhs
   | UnsolvableImplicit (evk,exp) -> explain_unsolvable_implicit env sigma evk exp
   | VarNotFound id -> explain_var_not_found env id
@@ -924,8 +924,11 @@ let explain_label_missing l s =
   str "The field " ++ str (Label.to_string l) ++ str " is missing in "
   ++ str s ++ str "."
 
-let explain_higher_order_include () =
-  str "You cannot Include a higher-order structure."
+let explain_include_restricted_functor mp =
+  let q = Nametab.shortest_qualid_of_module mp in
+  str "Cannot include the functor " ++ Libnames.pr_qualid q ++
+  strbrk " since it has a restricted signature. " ++
+  strbrk "You may name first an instance of this functor, and include it."
 
 let explain_module_error = function
   | SignatureMismatch (l,spec,err) -> explain_signature_mismatch l spec err
@@ -943,7 +946,7 @@ let explain_module_error = function
   | IncorrectWithConstraint l -> explain_incorrect_label_constraint l
   | GenerativeModuleExpected l -> explain_generative_module_expected l
   | LabelMissing (l,s) -> explain_label_missing l s
-  | HigherOrderInclude -> explain_higher_order_include ()
+  | IncludeRestrictedFunctor mp -> explain_include_restricted_functor mp
 
 (* Module internalization errors *)
 

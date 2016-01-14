@@ -16,6 +16,8 @@ Backtrace
 IStream
 Pp_control
 Loc
+CList
+CString
 Compat
 Flags
 Control
@@ -28,8 +30,6 @@ Segmenttree
 Unicodetable
 Unicode
 CObj
-CList
-CString
 CArray
 CStack
 Util
@@ -160,14 +160,14 @@ Constrarg
 Constrexpr_ops
 Genintern
 Notation_ops
-Topconstr
 Notation
 Dumpglob
+Syntax_def
+Smartlocate
+Topconstr
 Reserve
 Impargs
-Syntax_def
 Implicit_quantifiers
-Smartlocate
 Constrintern
 Modintern
 Constrextern

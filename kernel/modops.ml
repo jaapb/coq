@@ -67,15 +67,12 @@ type module_typing_error =
   | IncorrectWithConstraint of Label.t
   | GenerativeModuleExpected of Label.t
   | LabelMissing of Label.t * string
-  | HigherOrderInclude
+  | IncludeRestrictedFunctor of module_path
 
 exception ModuleTypingError of module_typing_error
 
 let error_existing_label l =
   raise (ModuleTypingError (LabelAlreadyDeclared l))
-
-let error_application_to_not_path mexpr =
-  raise (ModuleTypingError (ApplicationToNotPath mexpr))
 
 let error_not_a_functor () =
   raise (ModuleTypingError NotAFunctor)
@@ -113,8 +110,8 @@ let error_generative_module_expected l =
 let error_no_such_label_sub l l1 =
   raise (ModuleTypingError (LabelMissing (l,l1)))
 
-let error_higher_order_include () =
-  raise (ModuleTypingError HigherOrderInclude)
+let error_include_restricted_functor mp =
+  raise (ModuleTypingError (IncludeRestrictedFunctor mp))
 
 (** {6 Operations on functors } *)
 
@@ -339,7 +336,7 @@ let strengthen_const mp_from l cb resolver =
     in
       { cb with
 	const_body = Def (Mod_subst.from_val (mkConstU (con,u)));
-	const_body_code = Some (Cemitcodes.from_val (Cbytegen.compile_alias (con,u))) }
+	const_body_code = Some (Cemitcodes.from_val (Cbytegen.compile_alias con)) }
 
 let rec strengthen_mod mp_from mp_to mb =
   if mp_in_delta mb.mod_mp mb.mod_delta then mb

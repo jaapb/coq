@@ -33,7 +33,7 @@ let check_constraints cst env =
   if Environ.check_constraints cst env then ()
   else error_unsatisfied_constraints env cst
 
-(* This should be a type (a priori without intension to be an assumption) *)
+(* This should be a type (a priori without intention to be an assumption) *)
 let type_judgment env c t =
   match kind_of_term(whd_betadeltaiota env t) with
     | Sort s -> {utj_val = c; utj_type = s }
@@ -52,8 +52,8 @@ let assumption_of_judgment env t ty =
     error_assumption env (make_judge t ty)
 
 (************************************************)
-(* Incremental typing rules: builds a typing judgement given the *)
-(* judgements for the subterms. *)
+(* Incremental typing rules: builds a typing judgment given the *)
+(* judgments for the subterms. *)
 
 (*s Type of sorts *)
 
@@ -227,7 +227,7 @@ let judge_of_cast env c ct k expected_type =
       default_conv ~l2r:true CUMUL env ct expected_type
     | NATIVEcast ->
       let sigma = Nativelambda.empty_evars in
-      native_conv CUMUL sigma env ct expected_type
+      Nativeconv.native_conv CUMUL sigma env ct expected_type
   with NotConvertible ->
     error_actual_type env (make_judge c ct) expected_type
 

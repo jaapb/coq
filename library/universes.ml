@@ -12,11 +12,14 @@ open Names
 open Term
 open Environ
 open Univ
+open Globnames
 
+(** Global universe names *)
 type universe_names = 
     Univ.universe_level Idmap.t * Id.t Univ.LMap.t
 
-let global_universes = Summary.ref ~name:"Global universe names" 
+let global_universes =
+  Summary.ref ~name:"Global universe names"
   ((Idmap.empty, Univ.LMap.empty) : universe_names)
 
 let global_universe_names () = !global_universes
@@ -26,6 +29,25 @@ let pr_with_global_universes l =
   try Nameops.pr_id (LMap.find l (snd !global_universes))
   with Not_found -> Level.pr l
 
+(** Local universe names of polymorphic references *)
+
+type universe_binders = (Id.t * Univ.universe_level) list
+
+let universe_binders_table = Summary.ref Refmap.empty ~name:"universe binders"
+
+let universe_binders_of_global ref =
+  try
+    let l = Refmap.find ref !universe_binders_table in l
+  with Not_found -> []
+
+let register_universe_binders ref l =
+  universe_binders_table := Refmap.add ref l !universe_binders_table
+		     
+(* To disallow minimization to Set *)
+
+let set_minimization = ref true
+let is_set_minimization () = !set_minimization
+			    
 type universe_constraint_type = ULe | UEq | ULub
 
 type universe_constraint = universe * universe_constraint_type * universe
@@ -183,7 +205,7 @@ let leq_constr_univs_infer univs m n =
       else 
 	let u1 = Sorts.univ_of_sort s1 and u2 = Sorts.univ_of_sort s2 in
 	  if Univ.check_leq univs u1 u2 then
-	    ((if Univ.is_small_univ u1 then
+	    ((if Univ.is_type0_univ u1 then
 		cstrs := Constraints.add (u1, ULe, u2) !cstrs);
 	     true)
 	  else
@@ -798,7 +820,7 @@ let minimize_univ_variables ctx us algs left right cstrs =
 	    let cstrs' = List.fold_left (fun cstrs (d, r) -> 
 	      if d == Univ.Le then
 		enforce_leq inst (Universe.make r) cstrs
-	      else 
+	      else
 		try let lev = Option.get (Universe.level inst) in
 		      Constraint.add (lev, d, r) cstrs
 		with Option.IsNone -> failwith "")
@@ -832,7 +854,9 @@ let normalize_context_set ctx us algs =
     Constraint.fold (fun (l,d,r as cstr) (smallles, noneqs) ->
         if d == Le then
 	  if Univ.Level.is_small l then
-	    (Constraint.add cstr smallles, noneqs)
+	    if is_set_minimization () && LSet.mem r ctx then
+	      (Constraint.add cstr smallles, noneqs)
+	    else (smallles, noneqs)
 	  else if Level.is_small r then
 	    if Level.is_prop r then
 	      raise (Univ.UniverseInconsistency
@@ -872,28 +896,36 @@ let normalize_context_set ctx us algs =
       if d == Eq then (UF.union l r uf; noneqs)
       else (* We ignore the trivial Prop/Set <= i constraints. *)
 	if d == Le && Univ.Level.is_small l then noneqs
+	else if Univ.Level.is_prop l && d == Lt && Univ.Level.is_set r
+	then noneqs
 	else Constraint.add cstr noneqs)
       csts Constraint.empty
   in
   let noneqs = Constraint.union noneqs smallles in
   let partition = UF.partition uf in
   let flex x = LMap.mem x us in
-  let ctx, subst, eqs = List.fold_left (fun (ctx, subst, cstrs) s -> 
+  let ctx, subst, us, eqs = List.fold_left (fun (ctx, subst, us, cstrs) s -> 
     let canon, (global, rigid, flexible) = choose_canonical ctx flex algs s in
     (* Add equalities for globals which can't be merged anymore. *)
     let cstrs = LSet.fold (fun g cst -> 
       Constraint.add (canon, Univ.Eq, g) cst) global
       cstrs 
     in
+    (* Also add equalities for rigid variables *)
+    let cstrs = LSet.fold (fun g cst -> 
+      Constraint.add (canon, Univ.Eq, g) cst) rigid
+      cstrs
+    in
     let subst = LSet.fold (fun f -> LMap.add f canon) rigid subst in
-    let subst = LSet.fold (fun f -> LMap.add f canon) flexible subst in 
-      (LSet.diff (LSet.diff ctx rigid) flexible, subst, cstrs))
-    (ctx, LMap.empty, Constraint.empty) partition
+    let subst = LSet.fold (fun f -> LMap.add f canon) flexible subst in
+    let canonu = Some (Universe.make canon) in
+    let us = LSet.fold (fun f -> LMap.add f canonu) flexible us in
+      (LSet.diff ctx flexible, subst, us, cstrs))
+    (ctx, LMap.empty, us, Constraint.empty) partition
   in
   (* Noneqs is now in canonical form w.r.t. equality constraints, 
      and contains only inequality constraints. *)
   let noneqs = subst_univs_level_constraints subst noneqs in
-  let us = LMap.fold (fun u v acc -> LMap.add u (Some (Universe.make v)) acc) subst us in
   (* Compute the left and right set of flexible variables, constraints
      mentionning other variables remain in noneqs. *)
   let noneqs, ucstrsl, ucstrsr = 

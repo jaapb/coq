@@ -166,6 +166,8 @@ module Make
     (* This should not happen because of the grammar *)
       | IntValue (Some n) -> spc() ++ int n
       | StringValue s -> spc() ++ str s
+      | StringOptValue None -> mt()
+      | StringOptValue (Some s) -> spc() ++ str s
       | BoolValue b -> mt()
     in pr_printoption a None ++ pr_opt_value b
 
@@ -354,6 +356,7 @@ module Make
       | l ->
         prlist_with_sep spc
           (fun p -> hov 1 (str "(" ++ pr_params pr_c p ++ str ")")) l
+
 (*
   prlist_with_sep pr_semicolon (pr_params pr_c)
 *)
@@ -591,7 +594,8 @@ module Make
           let pr_goal_reference = function
             | OpenSubgoals -> mt ()
             | NthGoal n -> spc () ++ int n
-            | GoalId n -> spc () ++ str n in
+            | GoalId id -> spc () ++ pr_id id
+            | GoalUid n -> spc () ++ str n in
           let pr_showable = function
             | ShowGoal n -> keyword "Show" ++ pr_goal_reference n
             | ShowGoalImplicitly n -> keyword "Show Implicit Arguments" ++ pr_opt int n
@@ -772,11 +776,12 @@ module Make
           return (hov 2 (keyword "Proof" ++ pr_lconstrarg c))
         | VernacAssumption (stre,_,l) ->
           let n = List.length (List.flatten (List.map fst (List.map snd l))) in
-          return (
-            hov 2
-              (pr_assumption_token (n > 1) stre ++ spc() ++
-                 pr_ne_params_list pr_lconstr_expr l)
-          )
+          let pr_params (c, (xl, t)) =
+            hov 2 (prlist_with_sep sep pr_plident xl ++ spc() ++
+              (if c then str":>" else str":" ++ spc() ++ pr_lconstr_expr t))
+          in
+          let assumptions = prlist_with_sep spc (fun p -> hov 1 (str "(" ++ pr_params p ++ str ")")) l in
+          return (hov 2 (pr_assumption_token (n > 1) stre ++ spc() ++ assumptions))
         | VernacInductive (p,f,l) ->
           let pr_constructor (coe,(id,c)) =
             hov 2 (pr_lident id ++ str" " ++

@@ -154,6 +154,9 @@ summary.log:
 	$(SHOW) SUMMARY
 	$(HIDE)$(MAKE) --quiet summary > "$@"
 
+report: summary.log
+	$(HIDE)if grep -F 'Error!' summary.log ; then false; fi
+
 #######################################################################
 # Regression (and progression) tests
 #######################################################################
@@ -349,7 +352,7 @@ $(addsuffix .log,$(wildcard ideal-features/*.v)): %.v.log: %.v
           fi; \
 	} > "$@"
 
-# Additionnal dependencies for module tests
+# Additional dependencies for module tests
 $(addsuffix .log,$(wildcard modules/*.v)): %.v.log: modules/Nat.vo modules/plik.vo
 modules/%.vo: modules/%.v
 	$(HIDE)$(coqtop) -R modules Mods -compile $<

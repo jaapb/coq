@@ -196,6 +196,11 @@ let require () =
   let map dir = Qualid (Loc.ghost, qualid_of_string dir) in
   Vernacentries.vernac_require None (Some false) (List.rev_map map !require_list)
 
+let add_compat_require v =
+  match v with
+  | Flags.V8_4 -> add_require "Coq.Compat.Coq84"
+  | _ -> ()
+
 let compile_list = ref ([] : (bool * string) list)
 
 let glob_opt = ref false
@@ -232,15 +237,6 @@ let compile_files () =
 	  Lexer.restore_location_table coqdoc_init_state;
           compile_file vf)
         (List.rev l)
-
-(*s options for the virtual machine *)
-
-let boxed_val = ref false
-let use_vm = ref false
-
-let set_vm_opt () =
-  Vm.set_transp_values (not !boxed_val);
-  Vconv.set_use_vm !use_vm
 
 (** Options for proof general *)
 
@@ -359,7 +355,8 @@ let get_int opt n =
 
 let get_host_port opt s =
   match CString.split ':' s with
-  | [host; port] -> Some (Spawned.Socket(host, int_of_string port))
+  | [host; portr; portw] ->
+       Some (Spawned.Socket(host, int_of_string portr, int_of_string portw))
   | ["stdfds"] -> Some Spawned.AnonPipe
   | _ ->
      prerr_endline ("Error: host:port or stdfds expected after option "^opt);
@@ -483,7 +480,7 @@ let parse_args arglist =
     |"-async-proofs-private-flags" ->
         Flags.async_proofs_private_flags := Some (next ());
     |"-worker-id" -> set_worker_id opt (next ())
-    |"-compat" -> Flags.compat_version := get_compat_version (next ())
+    |"-compat" -> let v = get_compat_version (next ()) in Flags.compat_version := v; add_compat_require v
     |"-compile" -> add_compile false (next ())
     |"-compile-verbose" -> add_compile true (next ())
     |"-dump-glob" -> Dumpglob.dump_into_file (next ()); glob_opt := true
@@ -548,7 +545,6 @@ let parse_args arglist =
     |"-unicode" -> add_require "Utf8_core"
     |"-v"|"--version" -> Usage.version (exitcode ())
     |"-verbose-compat-notations" -> verb_compat_ntn := true
-    |"-vm" -> use_vm := true
     |"-where" -> print_where := true
 
     (* Deprecated options *)
@@ -608,7 +604,6 @@ let init arglist =
       if_verbose print_header ();
       inputstate ();
       Mltop.init_known_plugins ();
-      set_vm_opt ();
       engage ();
       (* Be careful to set these variables after the inputstate *)
       Syntax_def.set_verbose_compat_notations !verb_compat_ntn;

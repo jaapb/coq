@@ -1251,8 +1251,10 @@ let pb_equal = function
   | Reduction.CUMUL -> Reduction.CONV
   | Reduction.CONV -> Reduction.CONV
 
-let sort_cmp cv_pb s1 s2 u = 
-  Reduction.check_sort_cmp_universes cv_pb s1 s2 u
+let report_anomaly _ =
+  let e = UserError ("", Pp.str "Conversion test raised an anomaly") in
+  let e = Errors.push e in
+  iraise e
 
 let test_trans_conversion (f: ?l2r:bool-> ?evars:'a->'b) reds env sigma x y =
   try
@@ -1260,7 +1262,7 @@ let test_trans_conversion (f: ?l2r:bool-> ?evars:'a->'b) reds env sigma x y =
     let _ = f ~evars reds env (Evd.universes sigma) x y in
     true
   with Reduction.NotConvertible -> false
-    | e when is_anomaly e -> error "Conversion test raised an anomaly"
+    | e when is_anomaly e -> report_anomaly e
 
 let is_trans_conv reds env sigma = test_trans_conversion Reduction.trans_conv_universes reds env sigma
 let is_trans_conv_leq reds env sigma = test_trans_conversion Reduction.trans_conv_leq_universes reds env sigma
@@ -1278,14 +1280,14 @@ let check_conv ?(pb=Reduction.CUMUL) ?(ts=full_transparent_state) env sigma x y 
     try f ~evars:(safe_evar_value sigma) ts env (Evd.universes sigma) x y; true
     with Reduction.NotConvertible -> false
     | Univ.UniverseInconsistency _ -> false
-    | e when is_anomaly e -> error "Conversion test raised an anomaly"
+    | e when is_anomaly e -> report_anomaly e
 
 let sigma_compare_sorts env pb s0 s1 sigma =
   match pb with
   | Reduction.CONV -> Evd.set_eq_sort env sigma s0 s1
   | Reduction.CUMUL -> Evd.set_leq_sort env sigma s0 s1
     
-let sigma_compare_instances flex i0 i1 sigma =
+let sigma_compare_instances ~flex i0 i1 sigma =
   try Evd.set_eq_instances ~flex sigma i0 i1
   with Evd.UniversesDiffer
      | Univ.UniverseInconsistency _ ->
@@ -1295,8 +1297,8 @@ let sigma_univ_state =
   { Reduction.compare = sigma_compare_sorts;
     Reduction.compare_instances = sigma_compare_instances }
 
-let infer_conv ?(catch_incon=true) ?(pb=Reduction.CUMUL) ?(ts=full_transparent_state) 
-    env sigma x y = 
+let infer_conv_gen conv_fun ?(catch_incon=true) ?(pb=Reduction.CUMUL)
+    ?(ts=full_transparent_state) env sigma x y =
   try 
     let b, sigma = 
       let b, cstrs = 
@@ -1313,14 +1315,23 @@ let infer_conv ?(catch_incon=true) ?(pb=Reduction.CUMUL) ?(ts=full_transparent_s
       if b then sigma, true
       else
 	let sigma' = 
-	  Reduction.generic_conv pb false (safe_evar_value sigma) ts 
+	  conv_fun pb ~l2r:false sigma ts
 	    env (sigma, sigma_univ_state) x y in
 	  sigma', true
   with
   | Reduction.NotConvertible -> sigma, false
   | Univ.UniverseInconsistency _ when catch_incon -> sigma, false
-  | e when is_anomaly e -> error "Conversion test raised an anomaly"
-    
+  | e when is_anomaly e -> report_anomaly e
+
+let infer_conv = infer_conv_gen (fun pb ~l2r sigma ->
+      Reduction.generic_conv pb ~l2r (safe_evar_value sigma))
+
+(* This reference avoids always having to link C code with the kernel *)
+let vm_infer_conv = ref (infer_conv ~catch_incon:true ~ts:full_transparent_state)
+let set_vm_infer_conv f = vm_infer_conv := f
+let vm_infer_conv ?(pb=Reduction.CUMUL) env t1 t2 =
+  !vm_infer_conv ~pb env t1 t2
+
 (********************************************************************)
 (*             Special-Purpose Reduction                            *)
 (********************************************************************)
@@ -1640,7 +1651,7 @@ let betazetaevar_applist sigma n c l =
     if Int.equal n 0 then applist (substl env t, stack) else
     match kind_of_term t, stack with
     | Lambda(_,_,c), arg::stacktl -> stacklam (n-1) (arg::env) c stacktl
-    | LetIn(_,b,_,c), _ -> stacklam (n-1) (b::env) c stack
+    | LetIn(_,b,_,c), _ -> stacklam (n-1) (substl env b::env) c stack
     | Evar ev, _ ->
       (match safe_evar_value sigma ev with
       | Some body -> stacklam n env body stack

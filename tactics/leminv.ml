@@ -124,7 +124,7 @@ let rec add_prods_sign env sigma t =
         add_prods_sign (push_named (id,Some c1,t1) env) sigma b'
     | _ -> (env,t)
 
-(* [dep_option] indicates wether the inversion lemma is dependent or not.
+(* [dep_option] indicates whether the inversion lemma is dependent or not.
    If it is dependent and I is of the form (x_bar:T_bar)(I t_bar) then
    the stated goal will be (x_bar:T_bar)(H:(I t_bar))(P t_bar H)
    where P:(x_bar:T_bar)(H:(I x_bar))[sort].
@@ -229,7 +229,8 @@ let inversion_scheme env sigma t sort dep_option inv_op =
 
 let add_inversion_lemma name env sigma t sort dep inv_op =
   let invProof, ctx = inversion_scheme env sigma t sort dep inv_op in
-  let entry = definition_entry ~poly:(Flags.use_polymorphic_flag ()) ~univs:ctx invProof in
+  let entry = definition_entry ~poly:(Flags.use_polymorphic_flag ())
+			       ~univs:(snd ctx) invProof in
   let _ = declare_constant name (DefinitionEntry entry, IsProof Lemma) in
   ()
 

@@ -166,6 +166,18 @@ let _ = declare_bool_option
 	    optread  = print_primproj_params;
 	    optwrite = (:=) print_primproj_params_value }
 
+let print_primproj_compatibility_value = ref true
+let print_primproj_compatibility () = !print_primproj_compatibility_value
+
+let _ = declare_bool_option
+	  { optsync  = true;
+            optdepr  = false;
+	    optname  = "backwards-compatible printing of primitive projections";
+	    optkey   = ["Printing";"Primitive";"Projection";"Compatibility"];
+	    optread  = print_primproj_compatibility;
+	    optwrite = (:=) print_primproj_compatibility_value }
+
+	  
 (* Auxiliary function for MutCase printing *)
 (* [computable] tries to tell if the predicate typing the result is inferable*)
 
@@ -302,7 +314,7 @@ and contract_branch isgoal e (cdn,can,mkpat,b) =
 let is_nondep_branch c l =
   try
     (* FIXME: do better using tags from l *)
-    let sign,ccl = decompose_lam_n_assum (List.length l) c in
+    let sign,ccl = decompose_lam_n_decls (List.length l) c in
     noccur_between 1 (rel_context_length sign) ccl
   with e when Errors.noncritical e -> (* Not eta-expanded or not reduced *)
     false
@@ -401,7 +413,7 @@ let detype_sort sigma = function
   | Type u ->
     GType
       (if !print_universes
-       then [Pp.string_of_ppcmds (Univ.Universe.pr_with (Evd.pr_evd_level sigma) u)]
+       then [dl, Pp.string_of_ppcmds (Univ.Universe.pr_with (Evd.pr_evd_level sigma) u)]
        else [])
 
 type binder_kind = BProd | BLambda | BLetIn
@@ -413,7 +425,7 @@ let detype_anonymous = ref (fun loc n -> anomaly ~label:"detype" (Pp.str "index 
 let set_detype_anonymous f = detype_anonymous := f
 
 let detype_level sigma l =
-  GType (Some (Pp.string_of_ppcmds (Evd.pr_evd_level sigma l)))
+  GType (Some (dl, Pp.string_of_ppcmds (Evd.pr_evd_level sigma l)))
 
 let detype_instance sigma l = 
   if Univ.Instance.is_empty l then None
@@ -476,7 +488,7 @@ let rec detype flags avoid env sigma t =
 	  GApp (dl, GRef (dl, ConstRef (Projection.constant p), None), 
 		[detype flags avoid env sigma c])
       else 
-	if Projection.unfolded p then
+	if print_primproj_compatibility () && Projection.unfolded p then
 	  (** Print the compatibility match version *)
 	  let c' = 
 	    try 
@@ -513,7 +525,7 @@ let rec detype flags avoid env sigma t =
           id,l
         with Not_found ->
           Id.of_string ("X" ^ string_of_int (Evar.repr evk)), 
-          (Array.map_to_list (fun c -> (Id.of_string "A",c)) cl)
+          (Array.map_to_list (fun c -> (Id.of_string "__",c)) cl)
       in
         GEvar (dl,id,
                List.map (on_snd (detype flags avoid env sigma)) l)

@@ -18,10 +18,6 @@ Global Set Asymmetric Patterns.
 (** See bug 3545 *)
 Global Set Universal Lemma Under Conjunction.
 
-(** In 8.4, [admit] created a new axiom; in 8.5, it just shelves the goal. *)
-Axiom proof_admitted : False.
-Ltac admit := clear; abstract case proof_admitted.
-
 (** In 8.5, [refine] leaves over dependent subgoals. *)
 Tactic Notation "refine" uconstr(term) := refine term; shelve_unifiable.
 
@@ -33,6 +29,27 @@ Ltac constructor_84_tac tac := once (constructor; tac).
 Tactic Notation "constructor" := constructor_84.
 Tactic Notation "constructor" int_or_var(n) := constructor_84_n n.
 Tactic Notation "constructor" "(" tactic(tac) ")" := constructor_84_tac tac.
+
+(** Some tactic notations do not factor well with tactics; we add global parsing entries for some tactics that would otherwise be overwritten by custom variants. See https://coq.inria.fr/bugs/show_bug.cgi?id=4392. *)
+Tactic Notation "reflexivity" := reflexivity.
+Tactic Notation "assumption" := assumption.
+Tactic Notation "etransitivity" := etransitivity.
+Tactic Notation "cut" constr(c) := cut c.
+Tactic Notation "exact_no_check" constr(c) := exact_no_check c.
+Tactic Notation "vm_cast_no_check" constr(c) := vm_cast_no_check c.
+Tactic Notation "casetype" constr(c) := casetype c.
+Tactic Notation "elimtype" constr(c) := elimtype c.
+Tactic Notation "lapply" constr(c) := lapply c.
+Tactic Notation "transitivity" constr(c) := transitivity c.
+Tactic Notation "left" := left.
+Tactic Notation "eleft" := eleft.
+Tactic Notation "right" := right.
+Tactic Notation "eright" := eright.
+Tactic Notation "constructor" := constructor.
+Tactic Notation "econstructor" := econstructor.
+Tactic Notation "symmetry" := symmetry.
+Tactic Notation "split" := split.
+Tactic Notation "esplit" := esplit.
 
 Global Set Regular Subst Tactic.
 

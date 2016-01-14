@@ -280,9 +280,8 @@ type evar_universe_context =
    uctx_univ_variables : Universes.universe_opt_subst;
    (** The local universes that are unification variables *)
    uctx_univ_algebraic : Univ.universe_set; 
-   (** The subset of unification variables that
-	can be instantiated with algebraic universes as they appear in types 
-	and universe instances only. *)
+   (** The subset of unification variables that can be instantiated with
+	algebraic universes as they appear in inferred types only. *)
    uctx_universes : Univ.universes; (** The current graph extended with the local constraints *)
    uctx_initial_universes : Univ.universes; (** The graph at the creation of the evar_map *)
  }
@@ -356,6 +355,16 @@ let evar_context_universe_context ctx = Univ.ContextSet.to_context ctx.uctx_loca
 let evar_universe_context_of ctx = { empty_evar_universe_context with uctx_local = ctx }
 let evar_universe_context_subst ctx = ctx.uctx_univ_variables
 
+let add_uctx_names s l (names, names_rev) =
+  (UNameMap.add s l names, Univ.LMap.add l s names_rev)
+
+let evar_universe_context_of_binders b =
+  let ctx = empty_evar_universe_context in
+  let names =
+    List.fold_left (fun acc (id, l) -> add_uctx_names (Id.to_string id) l acc)
+		   ctx.uctx_names b
+  in { ctx with uctx_names = names }
+					
 let instantiate_variable l b v =
   v := Univ.LMap.add l (Some b) !v
 
@@ -579,7 +588,7 @@ type evar_map = {
   (** Metas *)
   metas      : clbinding Metamap.t;
   (** Interactive proofs *)
-  effects    : Declareops.side_effects;
+  effects    : Safe_typing.private_constants;
   future_goals : Evar.t list; (** list of newly created evars, to be
                                   eventually turned into goals if not solved.*)
   principal_future_goal : Evar.t option; (** if [Some e], [e] must be
@@ -649,7 +658,12 @@ let add d e i = match i.evar_body with
 let remove d e =
   let undf_evars = EvMap.remove e d.undf_evars in
   let defn_evars = EvMap.remove e d.defn_evars in
-  { d with undf_evars; defn_evars; }
+  let principal_future_goal = match d.principal_future_goal with
+  | None -> None
+  | Some e' -> if Evar.equal e e' then None else d.principal_future_goal
+  in
+  let future_goals = List.filter (fun e' -> not (Evar.equal e e')) d.future_goals in
+  { d with undf_evars; defn_evars; principal_future_goal; future_goals }
 
 let find d e =
   try EvMap.find e d.undf_evars
@@ -750,7 +764,7 @@ let cmap f evd =
   { evd with
       metas = Metamap.map (map_clb f) evd.metas;
       defn_evars = EvMap.map (map_evar_info f) evd.defn_evars;
-      undf_evars = EvMap.map (map_evar_info f) evd.defn_evars
+      undf_evars = EvMap.map (map_evar_info f) evd.undf_evars
   }
 
 (* spiwack: deprecated *)
@@ -768,7 +782,7 @@ let empty = {
   conv_pbs   = [];
   last_mods  = Evar.Set.empty;
   metas      = Metamap.empty;
-  effects    = Declareops.no_seff;
+  effects    = Safe_typing.empty_private_constants;
   evar_names = (EvMap.empty,Idmap.empty); (* id<->key for undefined evars *)
   future_goals = [];
   principal_future_goal = None;
@@ -965,19 +979,19 @@ let pr_uctx_level uctx =
 
 let universe_context ?names evd =
   match names with
-  | None -> Univ.ContextSet.to_context evd.universes.uctx_local
+  | None -> [], Univ.ContextSet.to_context evd.universes.uctx_local
   | Some pl ->
      let levels = Univ.ContextSet.levels evd.universes.uctx_local in
-     let newinst, left =
+     let newinst, map, left =
        List.fold_right
-         (fun (loc,id) (newinst, acc) ->
+         (fun (loc,id) (newinst, map, acc) ->
 	  let l =
 	    try UNameMap.find (Id.to_string id) (fst evd.universes.uctx_names)
 	    with Not_found ->
 	      user_err_loc (loc, "universe_context",
 			    str"Universe " ++ pr_id id ++ str" is not bound anymore.")
-	  in (l :: newinst, Univ.LSet.remove l acc))
-	 pl ([], levels)
+	  in (l :: newinst, (id, l) :: map, Univ.LSet.remove l acc))
+	 pl ([], [], levels)
      in
        if not (Univ.LSet.is_empty left) then
          let n = Univ.LSet.cardinal left in
@@ -985,8 +999,11 @@ let universe_context ?names evd =
 			(str(CString.plural n "Universe") ++ spc () ++
 			     Univ.LSet.pr (pr_uctx_level evd.universes) left ++
 			     spc () ++ str (CString.conjugate_verb_to_be n) ++ str" unbound.")
-       else Univ.UContext.make (Univ.Instance.of_array (Array.of_list newinst),
-				Univ.ContextSet.constraints evd.universes.uctx_local)
+       else
+	 let inst = Univ.Instance.of_array (Array.of_list newinst) in
+	 let ctx = Univ.UContext.make (inst,
+           Univ.ContextSet.constraints evd.universes.uctx_local)
+	 in map, ctx
 
 let restrict_universe_context evd vars =
   let uctx = evd.universes in
@@ -1028,8 +1045,8 @@ let merge_uctx sideff rigid uctx ctx' =
   let uctx_universes = merge_constraints (ContextSet.constraints ctx') univs in
     { uctx with uctx_local; uctx_universes; uctx_initial_universes = initial }
 
-let merge_context_set rigid evd ctx' = 
-  {evd with universes = merge_uctx false rigid evd.universes ctx'}
+let merge_context_set ?(sideff=false) rigid evd ctx' = 
+  {evd with universes = merge_uctx sideff rigid evd.universes ctx'}
 
 let merge_uctx_subst uctx s =
   { uctx with uctx_univ_variables = Univ.LMap.subst_union uctx.uctx_univ_variables s }
@@ -1041,26 +1058,9 @@ let with_context_set rigid d (a, ctx) =
   (merge_context_set rigid d ctx, a)
 
 let emit_universe_side_effects eff u =
-  Declareops.fold_side_effects
-    (fun acc eff ->
-     match eff with
-     | Declarations.SEscheme (l,s) ->
-	List.fold_left
-	  (fun acc (_,_,cb,c) ->
-	   let acc = match c with
-	     | `Nothing -> acc
-	     | `Opaque (s, ctx) -> merge_uctx true univ_rigid acc ctx
-	   in if cb.Declarations.const_polymorphic then acc
-	      else
-		merge_uctx true univ_rigid acc
-			   (Univ.ContextSet.of_context cb.Declarations.const_universes))
-	  acc l
-     | Declarations.SEsubproof _ -> acc)
-    u eff
+  let uctxs = Safe_typing.universes_of_private eff in
+  List.fold_left (merge_uctx true univ_rigid) u uctxs
         
-let add_uctx_names s l (names, names_rev) =
-    (UNameMap.add s l names, Univ.LMap.add l s names_rev)
-
 let uctx_new_univ_variable rigid name predicative
   ({ uctx_local = ctx; uctx_univ_variables = uvars; uctx_univ_algebraic = avars} as uctx) =
   let u = Universes.new_univ_level (Global.current_dirpath ()) in
@@ -1074,12 +1074,6 @@ let uctx_new_univ_variable rigid name predicative
 	  uctx_univ_algebraic = Univ.LSet.add u avars}, false
 	else {uctx with uctx_univ_variables = uvars'}, false
   in
-  (* let ctx' = *)
-  (*   if pred then *)
-  (*     Univ.ContextSet.add_constraints *)
-  (* 	(Univ.Constraint.singleton (Univ.Level.set, Univ.Le, u)) ctx' *)
-  (*   else ctx' *)
-  (* in *)
   let names = 
     match name with
     | Some n -> add_uctx_names n u uctx.uctx_names
@@ -1330,8 +1324,7 @@ let normalize_evar_universe_context uctx =
       Universes.normalize_context_set uctx.uctx_local uctx.uctx_univ_variables
         uctx.uctx_univ_algebraic
     in
-      if Univ.LSet.equal (fst us') (fst uctx.uctx_local) then 
-        uctx
+      if Univ.ContextSet.equal us' uctx.uctx_local then uctx
       else
 	let us', universes = Universes.refresh_constraints uctx.uctx_initial_universes us' in
 	let uctx' = 
@@ -1369,9 +1362,18 @@ let add_universe_name evd s l =
 
 let universes evd = evd.universes.uctx_universes
 
+let update_sigma_env evd env =
+  let univs = Environ.universes env in
+  let eunivs =
+    { evd.universes with uctx_initial_universes = univs;
+			 uctx_universes = univs }
+  in
+  let eunivs = merge_uctx true univ_rigid eunivs eunivs.uctx_local in
+  { evd with universes = eunivs }
+
 (* Conversion w.r.t. an evar map and its local universes. *)
 
-let conversion_gen env evd pb t u =
+let test_conversion_gen env evd pb t u =
   match pb with 
   | Reduction.CONV -> 
     Reduction.trans_conv_universes 
@@ -1381,14 +1383,8 @@ let conversion_gen env evd pb t u =
      full_transparent_state ~evars:(existential_opt_value evd) env 
     evd.universes.uctx_universes t u
 
-(* let conversion_gen_key = Profile.declare_profile "conversion_gen" *)
-(* let conversion_gen = Profile.profile5 conversion_gen_key conversion_gen *)
-
-let conversion env d pb t u =
-  conversion_gen env d pb t u; d
-
 let test_conversion env d pb t u =
-  try conversion_gen env d pb t u; true
+  try test_conversion_gen env d pb t u; true
   with _ -> false
 
 let eq_constr_univs evd t u =
@@ -1406,11 +1402,11 @@ let e_eq_constr_univs evdref t u =
 (* Side effects *)
 
 let emit_side_effects eff evd =
-  { evd with effects = Declareops.union_side_effects eff evd.effects;
+  { evd with effects = Safe_typing.concat_private eff evd.effects;
 	     universes = emit_universe_side_effects eff evd.universes }
 
 let drop_side_effects evd =
-  { evd with effects = Declareops.no_seff; }
+  { evd with effects = Safe_typing.empty_private_constants; }
 
 let eval_side_effects evd = evd.effects
 
@@ -1559,9 +1555,12 @@ let meta_with_name evd id =
 
 let clear_metas evd = {evd with metas = Metamap.empty}
 
-let meta_merge evd1 evd2 =
+let meta_merge ?(with_univs = true) evd1 evd2 =
   let metas = Metamap.fold Metamap.add evd1.metas evd2.metas in
-  let universes = union_evar_universe_context evd2.universes evd1.universes in
+  let universes =
+    if with_univs then union_evar_universe_context evd2.universes evd1.universes
+    else evd2.universes
+  in
   {evd2 with universes; metas; }
 
 type metabinding = metavariable * constr * instance_status

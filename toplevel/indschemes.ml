@@ -128,8 +128,8 @@ let define id internal ctx c t =
       { const_entry_body = c;
         const_entry_secctx = None;
         const_entry_type = t;
-	const_entry_polymorphic = true;
-	const_entry_universes = Evd.universe_context ctx;
+	const_entry_polymorphic = Flags.is_universe_polymorphism ();
+	const_entry_universes = snd (Evd.universe_context ctx);
         const_entry_opaque = false;
         const_entry_inline_code = false;
         const_entry_feedback = None;
@@ -360,18 +360,27 @@ requested
 let do_mutual_induction_scheme lnamedepindsort =
   let lrecnames = List.map (fun ((_,f),_,_,_) -> f) lnamedepindsort
   and env0 = Global.env() in
-  let sigma, lrecspec =
+  let sigma, lrecspec, _ =
     List.fold_right
-      (fun (_,dep,ind,sort) (evd, l) -> 
-        let evd, indu = Evd.fresh_inductive_instance env0 evd ind in
-          (evd, (indu,dep,interp_elimination_sort sort) :: l))
-    lnamedepindsort (Evd.from_env env0,[])
+      (fun (_,dep,ind,sort) (evd, l, inst) -> 
+       let evd, indu, inst =
+	 match inst with
+	 | None ->
+	    let _, ctx = Global.type_of_global_in_context env0 (IndRef ind) in
+	    let ctxs = Univ.ContextSet.of_context ctx in
+	    let evd = Evd.from_ctx (Evd.evar_universe_context_of ctxs) in
+	    let u = Univ.UContext.instance ctx in
+	      evd, (ind,u), Some u
+	 | Some ui -> evd, (ind, ui), inst
+       in
+          (evd, (indu,dep,interp_elimination_sort sort) :: l, inst))
+    lnamedepindsort (Evd.from_env env0,[],None)
   in
   let sigma, listdecl = Indrec.build_mutual_induction_scheme env0 sigma lrecspec in
   let declare decl fi lrecref =
     let decltype = Retyping.get_type_of env0 sigma decl in
     (* let decltype = refresh_universes decltype in *)
-    let proof_output = Future.from_val ((decl,Univ.ContextSet.empty),Declareops.no_seff) in
+    let proof_output = Future.from_val ((decl,Univ.ContextSet.empty),Safe_typing.empty_private_constants) in
     let cst = define fi UserIndividualRequest sigma proof_output (Some decltype) in
     ConstRef cst :: lrecref
   in
@@ -469,7 +478,7 @@ let do_combined_scheme name schemes =
       schemes
   in
   let body,typ = build_combined_scheme (Global.env ()) csts in
-  let proof_output = Future.from_val ((body,Univ.ContextSet.empty),Declareops.no_seff) in
+  let proof_output = Future.from_val ((body,Univ.ContextSet.empty),Safe_typing.empty_private_constants) in
   ignore (define (snd name) UserIndividualRequest Evd.empty proof_output (Some typ));
   fixpoint_message None [snd name]
 

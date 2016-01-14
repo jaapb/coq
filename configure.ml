@@ -11,11 +11,11 @@
 #load "str.cma"
 open Printf
 
-let coq_version = "8.5beta2"
-let coq_macos_version = "8.4.92" (** "[...] should be a string comprised of
+let coq_version = "8.5rc1"
+let coq_macos_version = "8.5.0" (** "[...] should be a string comprised of
 three non-negative, period-separed integers [...]" *)
-let vo_magic = 8492
-let state_magic = 58502
+let vo_magic = 8500
+let state_magic = 58500
 let distributed_exec = ["coqtop";"coqc";"coqchk";"coqdoc";"coqmktop";"coqworkmgr";
 "coqdoc";"coq_makefile";"coq-tex";"gallina";"coqwc";"csdpcert";"coqdep"]
 
@@ -332,11 +332,11 @@ let args_options = Arg.align [
   "-makecmd", Arg.Set_string Prefs.makecmd,
     "<command> Name of GNU Make command";
   "-native-compiler", arg_bool Prefs.nativecompiler,
-    " (yes|no) Compilation to native code for conversion and normalization";
+    "(yes|no) Compilation to native code for conversion and normalization";
   "-coqwebsite", Arg.Set_string Prefs.coqwebsite,
     " URL of the coq website";
-  "-force-caml-version", arg_bool Prefs.force_caml_version,
-    " Force OCaml version";
+  "-force-caml-version", Arg.Set Prefs.force_caml_version,
+    "Force OCaml version";
 ]
 
 let parse_args () =
@@ -476,7 +476,10 @@ let camlbin, caml_version, camllib =
     rebase_camlexec dir camlexec;
     Filename.dirname camlexec.byte, camlexec.byte
   | None ->
-    try let camlc = which camlexec.byte in Filename.dirname camlc, camlc
+    try let camlc = which camlexec.byte in
+        let dir = Filename.dirname camlc in
+        if not arch_win32 then rebase_camlexec dir camlexec; (* win32: TOCHECK *)
+        dir, camlc
     with Not_found ->
       die (sprintf "Error: cannot find '%s' in your path!\n" camlexec.byte ^
            "Please adjust your path or use the -camldir option of ./configure")
@@ -513,7 +516,12 @@ let caml_version_nums =
 
 let check_caml_version () =
   if caml_version_nums >= [3;12;1] then
-    printf "You have OCaml %s. Good!\n" caml_version
+    if caml_version_nums = [4;2;0] && not !Prefs.force_caml_version then
+      die ("Your version of OCaml is 4.02.0 which suffers from a bug inducing\n" ^
+        "very slow compilation times. If you still want to use it, use \n" ^
+        "option -force-caml-version.\n")
+    else
+      printf "You have OCaml %s. Good!\n" caml_version
   else
     let () = printf "Your version of OCaml is %s.\n" caml_version in
     if !Prefs.force_caml_version then

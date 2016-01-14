@@ -32,7 +32,7 @@ type entry = (Term.constr * Term.types) list
 let proofview p =
   p.comb , p.solution
 
-let compact el { comb; solution } =
+let compact el ({ solution } as pv) =
   let nf = Evarutil.nf_evar solution in
   let size = Evd.fold (fun _ _ i -> i+1) solution 0 in
   let new_el = List.map (fun (t,ty) -> nf t, nf ty) el in
@@ -45,7 +45,7 @@ let compact el { comb; solution } =
   let new_solution = Evd.raw_map_undefined apply_subst_einfo pruned_solution in
   let new_size = Evd.fold (fun _ _ i -> i+1) new_solution 0 in
   msg_info (Pp.str (Printf.sprintf "Evars: %d -> %d\n" size new_size));
-  new_el, { comb; solution = new_solution }
+  new_el, { pv with solution = new_solution; }
 
 
 (** {6 Starting and querying a proof view} *)
@@ -62,13 +62,13 @@ let dependent_init =
   let src = (Loc.ghost,Evar_kinds.GoalEvar) in
   (* Main routine *)
   let rec aux = function
-  | TNil sigma -> [], { solution = sigma; comb = []; }
+  | TNil sigma -> [], { solution = sigma; comb = []; shelf = [] }
   | TCons (env, sigma, typ, t) ->
     let (sigma, econstr ) = Evarutil.new_evar env sigma ~src ~store typ in
     let ret, { solution = sol; comb = comb } = aux (t sigma econstr) in
     let (gl, _) = Term.destEvar econstr in
     let entry = (econstr, typ) :: ret in
-    entry, { solution = sol; comb = gl :: comb; }
+    entry, { solution = sol; comb = gl :: comb; shelf = [] }
   in
   fun t ->
     let entry, v = aux t in
@@ -232,6 +232,9 @@ let apply env t sp =
   match ans with
   | Nil (e, info) -> iraise (TacticFailure e, info)
   | Cons ((r, (state, _), status, info), _) ->
+    let (status, gaveup) = status in
+    let status = (status, state.shelf, gaveup) in
+    let state = { state with shelf = [] } in
     r, state, status, Trace.to_tree info
 
 
@@ -384,20 +387,23 @@ let tclTRYFOCUS i j t = tclFOCUS_gen (tclUNIT ()) i j t
 let tclFOCUSID id t =
   let open Proof in
   Pv.get >>= fun initial ->
-  let rec aux n = function
-    | [] -> tclZERO (NoSuchGoals 1)
-    | g::l ->
-        if Names.Id.equal (Evd.evar_ident g initial.solution) id then
-          let (focused,context) = focus n n initial in
-          Pv.set focused >>
-          t >>= fun result ->
-          Pv.modify (fun next -> unfocus context next) >>
-          return result
-        else
-          aux (n+1) l in
-  aux 1 initial.comb
-
-
+  try
+    let ev = Evd.evar_key id initial.solution in
+    try
+      let n = CList.index Evar.equal ev initial.comb in
+      (* goal is already under focus *)
+      let (focused,context) = focus n n initial in
+      Pv.set focused >>
+        t >>= fun result ->
+      Pv.modify (fun next -> unfocus context next) >>
+        return result
+    with Not_found ->
+      (* otherwise, save current focus and work purely on the shelve *)
+      Comb.set [ev] >>
+        t >>= fun result ->
+      Comb.set initial.comb  >>
+        return result
+  with Not_found -> tclZERO (NoSuchGoals 1)
 
 (** {7 Dispatching on goals} *)
 
@@ -575,7 +581,7 @@ let shelve =
   Comb.get >>= fun initial ->
   Comb.set [] >>
   InfoL.leaf (Info.Tactic (fun () -> Pp.str"shelve")) >>
-  Shelf.put initial
+  Shelf.modify (fun gls -> gls @ initial)
 
 
 (** [contained_in_info e evi] checks whether the evar [e] appears in
@@ -614,7 +620,7 @@ let shelve_unifiable =
   let (u,n) = partition_unifiable initial.solution initial.comb in
   Comb.set n >>
   InfoL.leaf (Info.Tactic (fun () -> Pp.str"shelve_unifiable")) >>
-  Shelf.put u
+  Shelf.modify (fun gls -> gls @ u)
 
 (** [guard_no_unifiable] fails with error [UnresolvedBindings] if some
     goals are unifiable (see {!shelve_unifiable}) in the current focus. *)
@@ -636,6 +642,20 @@ let unshelve l p =
   let l = undefined p.solution l in
   { p with comb = p.comb@l }
 
+let with_shelf tac =
+  let open Proof in
+  Pv.get >>= fun pv ->
+  let { shelf; solution } = pv in
+  Pv.set { pv with shelf = []; solution = Evd.reset_future_goals solution } >>
+  tac >>= fun ans ->
+  Pv.get >>= fun npv ->
+  let { shelf = gls; solution = sigma } = npv in
+  let gls' = Evd.future_goals sigma in
+  let fgoals = Evd.future_goals solution in
+  let pgoal = Evd.principal_future_goal solution in
+  let sigma = Evd.restore_future_goals sigma fgoals pgoal in
+  Pv.set { npv with shelf; solution = sigma } >>
+  tclUNIT (CList.rev_append gls' gls, ans)
 
 (** [goodmod p m] computes the representative of [p] modulo [m] in the
     interval [[0,m-1]].*)
@@ -864,7 +884,7 @@ module Unsafe = struct
   let tclSETGOALS = Comb.set
 
   let tclEVARSADVANCE evd =
-    Pv.modify (fun ps -> { solution = evd; comb = undefined evd ps.comb })
+    Pv.modify (fun ps -> { ps with solution = evd; comb = undefined evd ps.comb })
 
   let tclEVARUNIVCONTEXT ctx = 
     Pv.modify (fun ps -> { ps with solution = Evd.set_universe_context ps.solution ctx })
@@ -1007,10 +1027,34 @@ end
 module Refine =
 struct
 
+  let extract_prefix env info =
+    let ctx1 = List.rev (Environ.named_context env) in
+    let ctx2 = List.rev (Evd.evar_context info) in
+    let rec share l1 l2 accu = match l1, l2 with
+    | d1 :: l1, d2 :: l2 ->
+      if d1 == d2 then share l1 l2 (d1 :: accu)
+      else (accu, d2 :: l2)
+    | _ -> (accu, l2)
+    in
+    share ctx1 ctx2 []
+
   let typecheck_evar ev env sigma =
     let info = Evd.find sigma ev in
+    (** Typecheck the hypotheses. *)
+    let type_hyp (sigma, env) (na, body, t as decl) =
+      let evdref = ref sigma in
+      let _ = Typing.sort_of env evdref t in
+      let () = match body with
+      | None -> ()
+      | Some body -> Typing.check env evdref body t
+      in
+      (!evdref, Environ.push_named decl env)
+    in
+    let (common, changed) = extract_prefix env info in
+    let env = Environ.reset_with_named_context (Environ.val_of_named_context common) env in
+    let (sigma, env) = List.fold_left type_hyp (sigma, env) changed in
+    (** Typecheck the conclusion *)
     let evdref = ref sigma in
-    let env = Environ.reset_with_named_context (Evd.evar_hyps info) env in
     let _ = Typing.sort_of env evdref (Evd.evar_concl info) in
     !evdref
 
@@ -1058,7 +1102,7 @@ struct
     let sigma = CList.fold_left Unsafe.mark_as_goal_evm sigma comb in
     let open Proof in
     InfoL.leaf (Info.Tactic (fun () -> Pp.(hov 2 (str"refine"++spc()++ Hook.get pr_constrv env sigma c)))) >>
-    Pv.set { solution = sigma; comb; }
+    Pv.modify (fun ps -> { ps with solution = sigma; comb; })
   end
 
   (** Useful definitions *)
@@ -1137,7 +1181,7 @@ module V82 = struct
       let sgs = CList.flatten goalss in
       let sgs = undefined evd sgs in
       InfoL.leaf (Info.Tactic (fun () -> Pp.str"<unknown>")) >>
-      Pv.set { solution = evd; comb = sgs; }
+      Pv.set { ps with solution = evd; comb = sgs; }
     with e when catchable_exception e ->
       let (e, info) = Errors.push e in
       tclZERO ~info e
@@ -1149,7 +1193,7 @@ module V82 = struct
     Pv.modify begin fun ps ->
     let map g s = GoalV82.nf_evar s g in
     let (goals,evd) = Evd.Monad.List.map map ps.comb ps.solution in
-    { solution = evd; comb = goals; }
+    { ps with solution = evd; comb = goals; }
     end
       
   let has_unresolved_evar pv =
@@ -1194,7 +1238,7 @@ module V82 = struct
 
   let of_tactic t gls =
     try
-      let init = { solution = gls.Evd.sigma ; comb = [gls.Evd.it] } in
+      let init = { shelf = []; solution = gls.Evd.sigma ; comb = [gls.Evd.it] } in
       let (_,final,_,_) = apply (GoalV82.env gls.Evd.sigma gls.Evd.it) t init in
       { Evd.sigma = final.solution ; it = final.comb }
     with Logic_monad.TacticFailure e as src ->

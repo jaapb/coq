@@ -88,7 +88,7 @@ type freeze_evars_flag = bool (* true = don't instantiate existing evars *)
 type orientation = bool
 
 type conditions =
-  | Naive (* Only try the first occurence of the lemma (default) *)
+  | Naive (* Only try the first occurrence of the lemma (default) *)
   | FirstSolved (* Use the first match whose side-conditions are solved *)
   | AllMatches (* Rewrite all matches whose side-conditions are solved *)
 
@@ -205,9 +205,47 @@ let rewrite_conv_closed_unif_flags = {
   resolve_evars = false
 }
 
+let rewrite_keyed_core_unif_flags = {
+  modulo_conv_on_closed_terms = Some full_transparent_state;
+    (* We have this flag for historical reasons, it has e.g. the consequence *)
+    (* to rewrite "?x+2" in "y+(1+1)=0" or to rewrite "?x+?x" in "2+(1+1)=0" *)
+
+  use_metas_eagerly_in_conv_on_closed_terms = true;
+  use_evars_eagerly_in_conv_on_closed_terms = false;
+    (* Combined with modulo_conv_on_closed_terms, this flag allows since 8.2 *)
+    (* to rewrite e.g. "?x+(2+?x)" in "1+(1+2)=0" *)
+
+  modulo_delta = full_transparent_state;
+  modulo_delta_types = full_transparent_state;
+  check_applied_meta_types = true;
+  use_pattern_unification = true;
+    (* To rewrite "?n x y" in "y+x=0" when ?n is *)
+    (* a preexisting evar of the goal*)
+
+  use_meta_bound_pattern_unification = true;
+
+  frozen_evars = Evar.Set.empty;
+    (* This is set dynamically *)
+
+  restrict_conv_on_strict_subterms = false;
+  modulo_betaiota = true;
+  (* Different from conv_closed *)
+  modulo_eta = true;
+}
+
+let rewrite_keyed_unif_flags = {
+  core_unify_flags = rewrite_keyed_core_unif_flags;
+  merge_unify_flags = rewrite_keyed_core_unif_flags;
+  subterm_unify_flags = rewrite_keyed_core_unif_flags;
+  allow_K_in_toplevel_higher_order_unification = false;
+  resolve_evars = false
+}
+
 let rewrite_elim with_evars frzevars cls c e =
   Proofview.Goal.enter begin fun gl ->
-  let flags = make_flags frzevars (Proofview.Goal.sigma gl) rewrite_conv_closed_unif_flags c in
+  let flags = if Unification.is_keyed_unification ()
+	      then rewrite_keyed_unif_flags else rewrite_conv_closed_unif_flags in
+  let flags = make_flags frzevars (Proofview.Goal.sigma gl) flags c in
   general_elim_clause with_evars flags cls c e
   end
 
@@ -317,7 +355,7 @@ let find_elim hdcncl lft2rgt dep cls ot gl =
 	assert false
     in
       let sigma, elim = Evd.fresh_global (Global.env ()) (Proofview.Goal.sigma gl) (ConstRef c) in
-	sigma, elim, Declareops.no_seff
+	sigma, elim, Safe_typing.empty_private_constants
   else
   let scheme_name = match dep, lft2rgt, inccl with
     (* Non dependent case *)
@@ -914,7 +952,7 @@ let apply_on_clause (f,t) clause =
     (match kind_of_term (last_arg f_clause.templval.Evd.rebus) with
      | Meta mv -> mv
      | _  -> errorlabstrm "" (str "Ill-formed clause applicator.")) in
-  clenv_fchain argmv f_clause clause
+  clenv_fchain ~with_univs:false argmv f_clause clause
 
 let discr_positions env sigma (lbeq,eqn,(t,t1,t2)) eq_clause cpath dirn sort =
   let e = next_ident_away eq_baseid (ids_of_context env) in
@@ -1126,7 +1164,14 @@ let sig_clausal_form env sigma sort_of_ty siglen ty dflt =
               applist(exist_term,[a;p_i_minus_1;w;tuple_tail])
             else
               error "Cannot solve a unification problem."
-	| None -> anomaly (Pp.str "Not enough components to build the dependent tuple")
+	| None ->
+            (* This at least happens if what has been detected as a
+               dependency is not one; use an evasive error message;
+               even if the problem is upwards: unification should be
+               tried in the first place in make_iterated_tuple instead
+               of approximatively computing the free rels; then
+               unsolved evars would mean not binding rel *)
+	    error "Cannot solve a unification problem."
   in
   let scf = sigrec_clausal_form siglen ty in
     !evdref, Evarutil.nf_evar !evdref scf
@@ -1577,7 +1622,7 @@ let restrict_to_eq_and_identity eq = (* compatibility *)
 
 exception FoundHyp of (Id.t * constr * bool)
 
-(* tests whether hyp [c] is [x = t] or [t = x], [x] not occuring in [t] *)
+(* tests whether hyp [c] is [x = t] or [t = x], [x] not occurring in [t] *)
 let is_eq_x gl x (id,_,c) =
   try
     let c = pf_nf_evar gl c in

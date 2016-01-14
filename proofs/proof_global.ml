@@ -63,14 +63,14 @@ let _ =
 
 (* Extra info on proofs. *)
 type lemma_possible_guards = int list list
-type proof_universes = Evd.evar_universe_context
+type proof_universes = Evd.evar_universe_context * Universes.universe_binders option
+type universe_binders = Id.t Loc.located list
 
 type proof_object = {
   id : Names.Id.t;
-  entries : Entries.definition_entry list;
+  entries : Safe_typing.private_constants Entries.definition_entry list;
   persistence : Decl_kinds.goal_kind;
   universes: proof_universes;
-  (* constraints : Univ.constraints; *)
 }
 
 type proof_ending =
@@ -89,6 +89,7 @@ type pstate = {
   proof : Proof.proof;
   strength : Decl_kinds.goal_kind;
   mode : proof_mode Ephemeron.key;
+  universe_binders: universe_binders option;
 }
 
 (* The head of [!pstates] is the actual current proof, the other ones are
@@ -226,7 +227,7 @@ let disactivate_proof_mode mode =
     end of the proof to close the proof. The proof is started in the
     evar map [sigma] (which can typically contain universe
     constraints). *)
-let start_proof sigma id str goals terminator =
+let start_proof sigma id ?pl str goals terminator =
   let initial_state = {
     pid = id;
     terminator = Ephemeron.create terminator;
@@ -234,10 +235,11 @@ let start_proof sigma id str goals terminator =
     endline_tactic = None;
     section_vars = None;
     strength = str;
-    mode = find_proof_mode "No" } in
+    mode = find_proof_mode "No";
+    universe_binders = pl } in
   push initial_state pstates
 
-let start_dependent_proof id str goals terminator =
+let start_dependent_proof id ?pl str goals terminator =
   let initial_state = {
     pid = id;
     terminator = Ephemeron.create terminator;
@@ -245,22 +247,50 @@ let start_dependent_proof id str goals terminator =
     endline_tactic = None;
     section_vars = None;
     strength = str;
-    mode = find_proof_mode "No" } in
+    mode = find_proof_mode "No";
+    universe_binders = pl } in
   push initial_state pstates
 
 let get_used_variables () = (cur_pstate ()).section_vars
+let get_universe_binders () = (cur_pstate ()).universe_binders
+
+let proof_using_auto_clear = ref false
+let _ = Goptions.declare_bool_option
+    { Goptions.optsync  = true;
+      Goptions.optdepr  = false;
+      Goptions.optname  = "Proof using Clear Unused";
+      Goptions.optkey   = ["Proof";"Using";"Clear";"Unused"];
+      Goptions.optread  = (fun () -> !proof_using_auto_clear);
+      Goptions.optwrite = (fun b -> proof_using_auto_clear := b) }
 
 let set_used_variables l =
   let env = Global.env () in
   let ids = List.fold_right Id.Set.add l Id.Set.empty in
   let ctx = Environ.keep_hyps env ids in
+  let ctx_set =
+    List.fold_right Id.Set.add (List.map pi1 ctx) Id.Set.empty in
+  let vars_of = Environ.global_vars_set in
+  let aux env entry (ctx, all_safe, to_clear as orig) =
+    match entry with
+    | (x,None,_) ->
+       if Id.Set.mem x all_safe then orig
+       else (ctx, all_safe, (Loc.ghost,x)::to_clear) 
+    | (x,Some bo, ty) as decl ->
+       if Id.Set.mem x all_safe then orig else
+       let vars = Id.Set.union (vars_of env bo) (vars_of env ty) in
+       if Id.Set.subset vars all_safe
+       then (decl :: ctx, Id.Set.add x all_safe, to_clear)
+       else (ctx, all_safe, (Loc.ghost,x) :: to_clear) in
+  let ctx, _, to_clear =
+    Environ.fold_named_context aux env ~init:(ctx,ctx_set,[]) in
+  let to_clear = if !proof_using_auto_clear then to_clear else [] in
   match !pstates with
   | [] -> raise NoCurrentProof
   | p :: rest ->
       if not (Option.is_empty p.section_vars) then
         Errors.error "Used section variables can be declared only once";
       pstates := { p with section_vars = Some ctx} :: rest;
-      ctx
+      ctx, to_clear
 
 let get_open_goals () =
   let gl, gll, shelf , _ , _ = Proof.proof (cur_pstate ()).proof in
@@ -270,7 +300,8 @@ let get_open_goals () =
     List.length shelf
 
 let close_proof ~keep_body_ucst_separate ?feedback_id ~now fpl =
-  let { pid; section_vars; strength; proof; terminator } = cur_pstate () in
+  let { pid; section_vars; strength; proof; terminator; universe_binders } =
+    cur_pstate () in
   let poly = pi2 strength (* Polymorphic *) in
   let initial_goals = Proof.initial_goals proof in
   let initial_euctx = Proof.initial_euctx proof in
@@ -287,16 +318,23 @@ let close_proof ~keep_body_ucst_separate ?feedback_id ~now fpl =
     if poly || now then
       let make_body t (c, eff) =
         let open Universes in
-        let body = c and typ = nf t in
+        let body = c in
+	let typ =
+	  if not (keep_body_ucst_separate || not (Safe_typing.empty_private_constants = eff)) then
+	    nf t
+	  else t
+	in
         let used_univs_body = Universes.universes_of_constr body in
         let used_univs_typ = Universes.universes_of_constr typ in
-        if keep_body_ucst_separate || not (Declareops.side_effects_is_empty eff) then
+        if keep_body_ucst_separate ||
+           not (Safe_typing.empty_private_constants = eff) then
           let initunivs = Evd.evar_context_universe_context initial_euctx in
           let ctx = Evd.evar_universe_context_set initunivs universes in
           (* For vi2vo compilation proofs are computed now but we need to
            * complement the univ constraints of the typ with the ones of
            * the body.  So we keep the two sets distinct. *)
-          let ctx_body = restrict_universe_context ctx used_univs_body in
+	  let used_univs = Univ.LSet.union used_univs_body used_univs_typ in
+          let ctx_body = restrict_universe_context ctx used_univs in
           (initunivs, typ), ((body, ctx_body), eff)
         else
           let initunivs = Univ.UContext.empty in
@@ -330,19 +368,20 @@ let close_proof ~keep_body_ucst_separate ?feedback_id ~now fpl =
 	  const_entry_opaque = true;
 	  const_entry_universes = univs;
 	  const_entry_polymorphic = poly})
-      fpl initial_goals in
-  { id = pid; entries = entries; persistence = strength; universes = universes },
+		fpl initial_goals in
+  let binders =
+    Option.map (fun names -> fst (Evd.universe_context ~names (Evd.from_ctx universes)))
+	       universe_binders
+  in
+  { id = pid; entries = entries; persistence = strength;
+    universes = (universes, binders) },
   fun pr_ending -> Ephemeron.get terminator pr_ending
 
-type closed_proof_output = (Term.constr * Declareops.side_effects) list * Evd.evar_universe_context
+type closed_proof_output = (Term.constr * Safe_typing.private_constants) list * Evd.evar_universe_context
 
 let return_proof ?(allow_partial=false) () =
  let { pid; proof; strength = (_,poly,_) } = cur_pstate () in
  if allow_partial then begin
-  if Proof.is_complete proof then begin
-    msg_warning (str"The proof of " ++ str (Names.Id.to_string pid) ++
-     str" is complete, no need to end it with Admitted");
-  end;
   let proofs = Proof.partial_proof proof in
   let _,_,_,_, evd = Proof.proof proof in
   let eff = Evd.eval_side_effects evd in
@@ -667,3 +706,9 @@ let copy_terminators ~src ~tgt =
   assert(List.length src = List.length tgt);
   List.map2 (fun op p -> { p with terminator = op.terminator }) src tgt
 
+let update_global_env () =
+  with_current_proof (fun _ p ->
+     Proof.in_proof p (fun sigma ->
+       let tac = Proofview.Unsafe.tclEVARS (Evd.update_sigma_env sigma (Global.env ())) in
+       let (p,(status,info)) = Proof.run_tactic (Global.env ()) tac p in
+         (p, ())))

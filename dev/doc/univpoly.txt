@@ -82,7 +82,7 @@ show that A's type is in cumululativity relation with id's type
 argument, incurring a universe constraint. To do this, one can simply
 call Typing.resolve_evars env evdref c which will do some infer_conv to
 produce the right constraints and put them in the evar_map. Of course in
-some cases you might now from an invariant that no new constraint would
+some cases you might know from an invariant that no new constraint would
 be produced and get rid of it. Anyway the kernel will tell you if you
 forgot some. As a temporary way out, [Universes.constr_of_global] allows
 you to make a constr from any non-polymorphic constant, but it will fail
@@ -167,7 +167,7 @@ kernel/univ.ml was modified. The new API forces every universe to be
 declared before it is mentionned in any constraint. This forces to
 declare every universe to be >= Set or > Set. Every universe variable
 introduced during elaboration is >= Set. Every _global_ universe is now
-declared explicitely > Set, _after_ typechecking the definition. In
+declared explicitly > Set, _after_ typechecking the definition. In
 polymorphic definitions Type@{i} ranges over Set and any other universe
 j. However, at instantiation time for polymorphic references, one can
 try to instantiate a universe parameter with Prop as well, if the

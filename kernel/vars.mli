@@ -65,7 +65,7 @@ val subst_var : Id.t -> constr -> constr
    if two names are identical, the one of least indice is kept *)
 val subst_vars : Id.t list -> constr -> constr
 
-(** [substn_vars n [id1;...;idn] t] substitute [VAR idj] by [Rel j+n-1] in [t]
+(** [substn_vars n [id1;...;idk] t] substitute [VAR idj] by [Rel j+n-1] in [t]
    if two names are identical, the one of least indice is kept *)
 val substn_vars : int -> Id.t list -> constr -> constr
 
@@ -88,5 +88,5 @@ val subst_univs_level_context : Univ.universe_level_subst -> rel_context -> rel_
 val subst_instance_constr : universe_instance -> constr -> constr
 val subst_instance_context : universe_instance -> rel_context -> rel_context
 
-type id_key = pconstant tableKey
+type id_key = constant tableKey
 val eq_id_key : id_key -> id_key -> bool

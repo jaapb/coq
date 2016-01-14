@@ -261,10 +261,10 @@ val dependent_evar_ident : existential_key -> evar_map -> Id.t
 
 (** {5 Side-effects} *)
 
-val emit_side_effects : Declareops.side_effects -> evar_map -> evar_map
+val emit_side_effects : Safe_typing.private_constants -> evar_map -> evar_map
 (** Push a side-effect into the evar map. *)
 
-val eval_side_effects : evar_map -> Declareops.side_effects
+val eval_side_effects : evar_map -> Safe_typing.private_constants
 (** Return the effects contained in the evar map. *)
 
 val drop_side_effects : evar_map -> evar_map
@@ -451,7 +451,7 @@ val meta_reassign  : metavariable -> constr * instance_status -> evar_map -> eva
 val clear_metas : evar_map -> evar_map
 
 (** [meta_merge evd1 evd2] returns [evd2] extended with the metas of [evd1] *)
-val meta_merge : evar_map -> evar_map -> evar_map
+val meta_merge : ?with_univs:bool -> evar_map -> evar_map -> evar_map
 
 val undefined_metas : evar_map -> metavariable list
 val map_metas_fvalue : (constr -> constr) -> evar_map -> evar_map
@@ -487,6 +487,9 @@ val union_evar_universe_context : evar_universe_context -> evar_universe_context
   evar_universe_context
 val evar_universe_context_subst : evar_universe_context -> Universes.universe_opt_subst
 
+val evar_universe_context_of_binders :
+  Universes.universe_binders -> evar_universe_context
+							    
 val make_evar_universe_context : env -> (Id.t located) list option -> evar_universe_context
 val restrict_universe_context : evar_map -> Univ.universe_set -> evar_map							   
 (** Raises Not_found if not a name for a universe in this map. *)
@@ -534,7 +537,8 @@ val check_leq : evar_map -> Univ.universe -> Univ.universe -> bool
 
 val evar_universe_context : evar_map -> evar_universe_context
 val universe_context_set : evar_map -> Univ.universe_context_set
-val universe_context : ?names:(Id.t located) list -> evar_map -> Univ.universe_context
+val universe_context : ?names:(Id.t located) list -> evar_map ->
+		       (Id.t * Univ.Level.t) list * Univ.universe_context
 val universe_subst : evar_map -> Universes.universe_opt_subst
 val universes : evar_map -> Univ.universes
 
@@ -542,7 +546,7 @@ val universes : evar_map -> Univ.universes
 val merge_universe_context : evar_map -> evar_universe_context -> evar_map
 val set_universe_context : evar_map -> evar_universe_context -> evar_map
 
-val merge_context_set : rigid -> evar_map -> Univ.universe_context_set -> evar_map
+val merge_context_set : ?sideff:bool -> rigid -> evar_map -> Univ.universe_context_set -> evar_map
 val merge_universe_subst : evar_map -> Universes.universe_opt_subst -> evar_map
 
 val with_context_set : rigid -> evar_map -> 'a Univ.in_universe_context_set -> evar_map * 'a
@@ -556,6 +560,8 @@ val refresh_undefined_universes : evar_map -> evar_map * Univ.universe_level_sub
 
 val nf_constraints : evar_map -> evar_map
 
+val update_sigma_env : evar_map -> env -> evar_map
+
 (** Polymorphic universes *)
 
 val fresh_sort_in_family : ?rigid:rigid -> env -> evar_map -> sorts_family -> evar_map * sorts
@@ -567,14 +573,11 @@ val fresh_global : ?rigid:rigid -> ?names:Univ.Instance.t -> env -> evar_map ->
   Globnames.global_reference -> evar_map * constr
 
 (********************************************************************
-  Conversion w.r.t. an evar map: might generate universe unifications 
-  that are kept in the evarmap.
-  Raises [NotConvertible]. *)
-
-val conversion : env -> evar_map -> conv_pb -> constr -> constr -> evar_map
+  Conversion w.r.t. an evar map, not unifying universes. See 
+  [Reductionops.infer_conv] for conversion up-to universes. *)
 
 val test_conversion : env -> evar_map -> conv_pb -> constr -> constr -> bool
-(** This one forgets about the assignemts of universes. *)
+(** WARNING: This does not allow unification of universes *)
 
 val eq_constr_univs : evar_map -> constr -> constr -> evar_map * bool
 (** Syntactic equality up to universes, recording the associated constraints *)

@@ -37,6 +37,7 @@ type 'a hint_ast =
   | Extern     of Tacexpr.glob_tactic_expr       (* Hint Extern *)
 
 type hint
+type raw_hint = constr * types * Univ.universe_context_set
 
 type hints_path_atom = 
   | PathHints of global_reference list
@@ -69,6 +70,7 @@ type hints_path =
 val normalize_path : hints_path -> hints_path
 val path_matches : hints_path -> hints_path_atom list -> bool
 val path_derivate : hints_path -> hints_path_atom -> hints_path
+val pp_hints_path_atom : hints_path_atom -> Pp.std_ppcmds
 val pp_hints_path : hints_path -> Pp.std_ppcmds
 
 module Hint_db :
@@ -151,8 +153,9 @@ val interp_hints : polymorphic -> hints_expr -> hints_entry
 
 val add_hints : locality_flag -> hint_db_name list -> hints_entry -> unit
 
-val prepare_hint : bool (* Check no remaining evars *) -> env -> evar_map -> 
-  open_constr -> hint_term
+val prepare_hint : bool (* Check no remaining evars *) ->
+  (bool * bool) (* polymorphic or monomorphic, local or global *) ->
+  env -> evar_map -> open_constr -> hint_term
 
 (** [make_exact_entry pri (c, ctyp)].
    [c] is the term given as an exact proof to solve the goal;
@@ -198,11 +201,11 @@ val make_extern :
       -> hint_entry
 
 val run_hint : hint ->
-  ((constr * clausenv) hint_ast -> 'r Proofview.tactic) -> 'r Proofview.tactic
+  ((raw_hint * clausenv) hint_ast -> 'r Proofview.tactic) -> 'r Proofview.tactic
 
 (** This function is for backward compatibility only, not to use in newly
     written code. *)
-val repr_hint : hint -> (constr * clausenv) hint_ast
+val repr_hint : hint -> (raw_hint * clausenv) hint_ast
 
 val extern_intern_tac :
   (patvar list -> Tacexpr.raw_tactic_expr -> Tacexpr.glob_tactic_expr) Hook.t

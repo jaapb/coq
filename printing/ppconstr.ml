@@ -140,8 +140,8 @@ end) = struct
 
   let pr_univ l =
     match l with
-      | [x] -> str x
-      | l -> str"max(" ++ prlist_with_sep (fun () -> str",") str l ++ str")"
+      | [_,x] -> str x
+      | l -> str"max(" ++ prlist_with_sep (fun () -> str",") (fun x -> str (snd x)) l ++ str")"
 
   let pr_univ_annot pr x = str "@{" ++ pr x ++ str "}"
 
@@ -174,7 +174,7 @@ end) = struct
       tag_type (str "Set")
     | GType u ->
       (match u with
-        | Some u -> str u
+        | Some (_,u) -> str u
         | None -> tag_type (str "Type"))
 
   let pr_universe_instance l =
@@ -638,13 +638,13 @@ end) = struct
       | CLetTuple (_,nal,(na,po),c,b) ->
         return (
           hv 0 (
-            keyword "let" ++ spc () ++
-              hov 0 (str "(" ++
+            hov 2 (keyword "let" ++ spc () ++
+              hov 1 (str "(" ++
                        prlist_with_sep sep_v pr_lname nal ++
                        str ")" ++
-                       pr_simple_return_type (pr mt) na po ++ str " :=" ++
-                       pr spc ltop c ++ spc ()
-                     ++ keyword "in") ++
+                       pr_simple_return_type (pr mt) na po ++ str " :=") ++
+                       pr spc ltop c
+                     ++ keyword " in") ++
               pr spc ltop b),
           lletin
         )

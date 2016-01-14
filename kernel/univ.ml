@@ -1707,7 +1707,9 @@ struct
     else if Array.length y = 0 then x 
     else Array.append x y
 
-  let of_array a = a
+  let of_array a =
+    assert(Array.for_all (fun x -> not (Level.is_prop x)) a);
+    a
 
   let to_array a = a
 
@@ -1715,7 +1717,7 @@ struct
 
   let subst_fn fn t = 
     let t' = CArray.smartmap fn t in
-      if t' == t then t else t'
+      if t' == t then t else of_array t'
 
   let levels x = LSet.of_array x
 
@@ -1754,7 +1756,7 @@ let eq_puniverses f (x, u) (y, u') =
   f x y && Instance.equal u u'
 
 (** A context of universe levels with universe constraints,
-    representiong local universe variables and constraints *)
+    representing local universe variables and constraints *)
 
 module UContext =
 struct
@@ -1768,7 +1770,7 @@ struct
 
   let pr prl (univs, cst as ctx) =
     if is_empty ctx then mt() else
-      Instance.pr prl univs ++ str " |= " ++ v 0 (Constraint.pr prl cst)
+      h 0 (Instance.pr prl univs ++ str " |= ") ++ h 0 (v 0 (Constraint.pr prl cst))
 
   let hcons (univs, cst) =
     (Instance.hcons univs, hcons_constraints cst)
@@ -1778,8 +1780,11 @@ struct
 
   let union (univs, cst) (univs', cst') =
     Instance.append univs univs', Constraint.union cst cst'
-      
+
   let dest x = x
+
+  let size (x,_) = Instance.length x
+
 end
 
 type universe_context = UContext.t
@@ -1797,6 +1802,9 @@ struct
   let empty = (LSet.empty, Constraint.empty)
   let is_empty (univs, cst) = LSet.is_empty univs && Constraint.is_empty cst
 
+  let equal (univs, cst as x) (univs', cst' as y) =
+    x == y || (LSet.equal univs univs' && Constraint.equal cst cst')
+									
   let of_set s = (s, Constraint.empty)
   let singleton l = of_set (LSet.singleton l)
   let of_instance i = of_set (Instance.levels i)
@@ -1836,7 +1844,7 @@ struct
 
   let pr prl (univs, cst as ctx) =
     if is_empty ctx then mt() else
-      LSet.pr prl univs ++ str " |= " ++ v 0 (Constraint.pr prl cst)
+      h 0 (LSet.pr prl univs ++ str " |= ") ++ h 0 (v 0 (Constraint.pr prl cst))
 
   let constraints (univs, cst) = cst
   let levels (univs, cst) = univs
@@ -2024,8 +2032,8 @@ let dump_universes output g =
   let dump_arc u = function
     | Canonical {univ=u; lt=lt; le=le} ->
 	let u_str = Level.to_string u in
-	List.iter (fun v -> output Lt (Level.to_string v) u_str) lt;
-	List.iter (fun v -> output Le (Level.to_string v) u_str) le
+	List.iter (fun v -> output Lt u_str (Level.to_string v)) lt;
+	List.iter (fun v -> output Le u_str (Level.to_string v)) le
     | Equiv v ->
       output Eq (Level.to_string u) (Level.to_string v)
   in

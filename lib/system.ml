@@ -11,12 +11,11 @@
 open Pp
 open Errors
 open Util
-open Unix
 
 (* All subdirectories, recursively *)
 
 let exists_dir dir =
-  try let _ = closedir (opendir dir) in true with Unix_error _ -> false
+  try Sys.is_directory dir with Sys_error _ -> false
 
 let skipped_dirnames = ref ["CVS"; "_darcs"]
 
@@ -31,27 +30,61 @@ let all_subdirs ~unix_path:root =
   let l = ref [] in
   let add f rel = l := (f, rel) :: !l in
   let rec traverse dir rel =
-    let dirh = opendir dir in
-    try
-      while true do
-	let f = readdir dirh in
-	if ok_dirname f then
-	  let file = Filename.concat dir f in
-	  try
-            begin match (stat file).st_kind with
-	    | S_DIR ->
-	      let newrel = rel @ [f] in
-	      add file newrel;
-	      traverse file newrel
-            | _ -> ()
-            end
-	  with Unix_error (e,s1,s2) -> ()
-      done
-    with End_of_file ->
-      closedir dirh
+    Array.iter (fun f ->
+      if ok_dirname f then
+	let file = Filename.concat dir f in
+        if Sys.is_directory file then begin
+          let newrel = rel @ [f] in
+	  add file newrel;
+	  traverse file newrel
+        end)
+      (Sys.readdir dir)
   in
   if exists_dir root then traverse root [];
   List.rev !l
+
+(* Caching directory contents for efficient syntactic equality of file
+   names even on case-preserving but case-insensitive file systems *)
+
+module StrMod = struct
+  type t = string
+  let compare = compare
+end
+
+module StrMap = Map.Make(StrMod)
+module StrSet = Set.Make(StrMod)
+
+let dirmap = ref StrMap.empty
+
+let make_dir_table dir =
+  let filter_dotfiles s f = if f.[0] = '.' then s else StrSet.add f s in
+  Array.fold_left filter_dotfiles StrSet.empty (Sys.readdir dir)
+
+let exists_in_dir_respecting_case dir bf =
+  let contents, cached =
+    try StrMap.find dir !dirmap, true with Not_found ->
+    let contents = make_dir_table dir in
+    dirmap := StrMap.add dir contents !dirmap;
+    contents, false in
+  StrSet.mem bf contents ||
+    if cached then begin
+      (* rescan, there is a new file we don't know about *)
+      let contents = make_dir_table dir in
+      dirmap := StrMap.add dir contents !dirmap;
+      StrSet.mem bf contents
+    end
+    else
+      false
+
+let file_exists_respecting_case path f =
+  (* This function ensures that a file with expected lowercase/uppercase
+     is the correct one, even on case-insensitive file systems *)
+  let rec aux f =
+    let bf = Filename.basename f in
+    let df = Filename.dirname f in
+    (String.equal df "." || aux df)
+    && exists_in_dir_respecting_case (Filename.concat path df) bf
+  in Sys.file_exists (Filename.concat path f) && aux f
 
 let rec search paths test =
   match paths with
@@ -77,7 +110,7 @@ let where_in_path ?(warn=true) path filename =
   in
   check_and_warn (search path (fun lpe ->
     let f = Filename.concat lpe filename in
-    if Sys.file_exists f then [lpe,f] else []))
+    if file_exists_respecting_case lpe filename then [lpe,f] else []))
 
 let where_in_path_rex path rex =
   search path (fun lpe ->
@@ -93,6 +126,8 @@ let where_in_path_rex path rex =
 
 let find_file_in_path ?(warn=true) paths filename =
   if not (Filename.is_implicit filename) then
+    (* the name is considered to be a physical name and we use the file
+       system rules (e.g. possible case-insensitivity) to find it *)
     if Sys.file_exists filename then
       let root = Filename.dirname filename in
       root, filename
@@ -100,6 +135,9 @@ let find_file_in_path ?(warn=true) paths filename =
       errorlabstrm "System.find_file_in_path"
 	(hov 0 (str "Can't find file" ++ spc () ++ str filename))
   else
+    (* the name is considered to be the transcription as a relative
+       physical name of a logical name, so we deal with it as a name
+       to be locate respecting case *)
     try where_in_path ~warn paths filename
     with Not_found ->
       errorlabstrm "System.find_file_in_path"
@@ -224,7 +262,7 @@ type time = float * float * float
 
 let get_time () =
   let t = Unix.times ()  in
-  (Unix.gettimeofday(), t.tms_utime, t.tms_stime)
+  (Unix.gettimeofday(), t.Unix.tms_utime, t.Unix.tms_stime)
 
 (* Keep only 3 significant digits *)
 let round f = (floor (f *. 1e3)) *. 1e-3

@@ -341,6 +341,7 @@ value coq_interprete
       /* Fallthrough */
       Instruct(ENVACC){
 	print_instr("ENVACC");
+	print_int(*pc);
 	accu = Field(coq_env, *pc++);
         Next;
       }
@@ -371,6 +372,10 @@ value coq_interprete
 	sp[1] = (value)pc;
 	sp[2] = coq_env;
 	sp[3] = Val_long(coq_extra_args);
+	print_instr("call stack=");
+	print_lint(sp[1]);
+	print_lint(sp[2]);
+	print_lint(sp[3]);
 	pc = Code_val(accu);
 	coq_env = accu;
 	coq_extra_args = 0;
@@ -458,6 +463,7 @@ value coq_interprete
 	sp[0] = arg1;
 	sp[1] = arg2;
 	pc = Code_val(accu);
+	print_lint(accu);
 	coq_env = accu;
 	coq_extra_args += 1;
 	goto check_stacks;
@@ -481,11 +487,18 @@ value coq_interprete
 	print_instr("RETURN");
 	print_int(*pc);
 	sp += *pc++;
+	print_instr("stack=");
+	print_lint(sp[0]);
+	print_lint(sp[1]);
+	print_lint(sp[2]);
 	if (coq_extra_args > 0) {
+	  print_instr("extra args > 0");
+	  print_lint(coq_extra_args);
 	  coq_extra_args--;
 	  pc = Code_val(accu);
 	  coq_env = accu;
 	} else {
+	  print_instr("extra args = 0");
 	  pc = (code_t)(sp[0]);
 	  coq_env = sp[1];
 	  coq_extra_args = Long_val(sp[2]);
@@ -585,7 +598,10 @@ value coq_interprete
 	Alloc_small(accu, 1 + nvars, Closure_tag);
 	Code_val(accu) = pc + *pc;
 	pc++;
-	for (i = 0; i < nvars; i++) Field(accu, i + 1) = sp[i];
+	for (i = 0; i < nvars; i++) {
+	  print_lint(sp[i]);
+	  Field(accu, i + 1) = sp[i];
+	}
 	sp += nvars;
 	Next;
       }
@@ -720,6 +736,7 @@ value coq_interprete
       /* Fallthrough */
       Instruct(GETGLOBAL){
 	print_instr("GETGLOBAL");
+	print_int(*pc);
 	accu = Field(coq_global_data, *pc);
         pc++;
         Next;
@@ -732,7 +749,7 @@ value coq_interprete
 	tag_t tag = *pc++;
 	mlsize_t i;
 	value block;
-	print_instr("MAKEBLOCK");
+	print_instr("MAKEBLOCK, tag=");
 	Alloc_small(block, wosize, tag);
 	Field(block, 0) = accu;
 	for (i = 1; i < wosize; i++) Field(block, i) = *sp++;
@@ -743,7 +760,8 @@ value coq_interprete
 	
 	tag_t tag = *pc++;
 	value block;
-	print_instr("MAKEBLOCK1");
+	print_instr("MAKEBLOCK1, tag=");
+	print_int(tag);
 	Alloc_small(block, 1, tag);
 	Field(block, 0) = accu;
 	accu = block;
@@ -753,7 +771,8 @@ value coq_interprete
 	
 	tag_t tag = *pc++;
 	value block;
-	print_instr("MAKEBLOCK2");
+	print_instr("MAKEBLOCK2, tag=");
+	print_int(tag);
 	Alloc_small(block, 2, tag);
 	Field(block, 0) = accu;
 	Field(block, 1) = sp[0];
@@ -764,7 +783,8 @@ value coq_interprete
       Instruct(MAKEBLOCK3) {
 	tag_t tag = *pc++;
 	value block;
-	print_instr("MAKEBLOCK3");
+	print_instr("MAKEBLOCK3, tag=");
+	print_int(tag);
 	Alloc_small(block, 3, tag);
 	Field(block, 0) = accu;
 	Field(block, 1) = sp[0];
@@ -776,7 +796,8 @@ value coq_interprete
       Instruct(MAKEBLOCK4) {
 	tag_t tag = *pc++;
 	value block;
-	print_instr("MAKEBLOCK4");
+	print_instr("MAKEBLOCK4, tag=");
+	print_int(tag);
 	Alloc_small(block, 4, tag);
 	Field(block, 0) = accu;
 	Field(block, 1) = sp[0];
@@ -844,7 +865,6 @@ value coq_interprete
       }
 	
       Instruct(SETFIELD1){
-        int i, j, size, size_aux;
 	print_instr("SETFIELD1");
 	caml_modify(&Field(accu, 1),*sp);
        	sp++;
@@ -884,19 +904,17 @@ value coq_interprete
       Instruct(PROJ){
 	print_instr("PROJ");
 	if (Is_accu (accu)) {
+          value block;
 	  /* Skip over the index of projected field */
 	  pc++;
-	  /* Save the argument on the stack */
-	  *--sp = accu;
 	  /* Create atom */
-	  Alloc_small(accu, 2, ATOM_PROJ_TAG);
-	  Field(accu, 0) = Field(coq_global_data, *pc);
-	  Field(accu, 1) = sp[0];
-	  sp[0] = accu;
+	  Alloc_small(block, 2, ATOM_PROJ_TAG);
+	  Field(block, 0) = Field(coq_global_data, *pc);
+	  Field(block, 1) = accu;
 	  /* Create accumulator */
 	  Alloc_small(accu, 2, Accu_tag);
 	  Code_val(accu) = accumulate;
-	  Field(accu,1) = *sp++;
+	  Field(accu, 1) = block;
 	} else {
 	    accu = Field(accu, *pc++);
 	}
@@ -943,6 +961,7 @@ value coq_interprete
       /* Fallthrough */
       Instruct(CONSTINT) {
 	print_instr("CONSTINT");
+	print_int(*pc);
 	accu = Val_int(*pc);
 	pc++;
 	Next;
@@ -1110,7 +1129,6 @@ value coq_interprete
 	/* returns the sum plus one with a carry */
 	uint32_t s;
 	s = (uint32_t)accu + (uint32_t)*sp++ + 1;
-	value block;
         if( (uint32_t)s <= (uint32_t)accu ) {
           /* carry */
 	  Alloc_small(accu, 1, 2); /* ( _ , arity, tag ) */
@@ -1271,7 +1289,7 @@ value coq_interprete
 
       Instruct (COMPAREINT31) {
 	/* returns Eq if equal, Lt if accu is less than *sp, Gt otherwise */
-	/* assumes Inudctive _ : _ := Eq | Lt | Gt */
+	/* assumes Inductive _ : _ := Eq | Lt | Gt */
 	print_instr("COMPAREINT31");
 	if ((uint32_t)accu == (uint32_t)*sp) {
 	  accu = 1;  /* 2*0+1 */

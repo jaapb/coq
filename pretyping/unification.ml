@@ -37,6 +37,8 @@ let _ = Goptions.declare_bool_option {
   Goptions.optwrite = (fun a -> keyed_unification:=a);
 }
 
+let is_keyed_unification () = !keyed_unification
+
 let debug_unification = ref (false)
 let _ = Goptions.declare_bool_option {
   Goptions.optsync = true; Goptions.optdepr = false;
@@ -904,8 +906,18 @@ let rec unify_0_with_initial_metas (sigma,ms,es as subst) conv_at_top env cv_pb 
       match subst_defined_metas_evars subst cN with
       | None -> (* some undefined Metas in cN *) None
       | Some n1 ->
-          (* No subterm restriction there, too much incompatibilities *)
-	  let sigma, b = infer_conv ~pb ~ts:convflags curenv sigma m1 n1 in
+         (* No subterm restriction there, too much incompatibilities *)
+	 let sigma =
+	   if opt.with_types then
+	     try (* Ensure we call conversion on terms of the same type *)
+	       let tyM = get_type_of curenv ~lax:true sigma m1 in
+	       let tyN = get_type_of curenv ~lax:true sigma n1 in
+	       check_compatibility curenv CUMUL flags substn tyM tyN
+	     with RetypeError _ ->
+	       (* Renounce, maybe metas/evars prevents typing *) sigma
+	   else sigma
+	 in 
+	 let sigma, b = infer_conv ~pb ~ts:convflags curenv sigma m1 n1 in
 	    if b then Some (sigma, metasubst, evarsubst)
 	    else 
 	      if is_ground_term sigma m1 && is_ground_term sigma n1 then
@@ -1637,8 +1649,13 @@ let w_unify_to_subterm env evd ?(flags=default_unify_flags ()) (op,cl) =
     let cl = strip_outer_cast cl in
     (try
        if closed0 cl && not (isEvar cl) && keyed_unify env evd kop cl then
-	 (try w_typed_unify env evd CONV flags op cl,cl
-	  with ex when Pretype_errors.unsatisfiable_exception ex ->
+       (try
+         if !keyed_unification then
+           let f1, l1 = decompose_app_vect op in
+	   let f2, l2 = decompose_app_vect cl in
+	   w_typed_unify_array env evd flags f1 l1 f2 l2,cl
+	 else w_typed_unify env evd CONV flags op cl,cl
+       with ex when Pretype_errors.unsatisfiable_exception ex ->
 	    bestexn := Some ex; error "Unsat")
        else error "Bound 1"
      with ex when precatchable_exception ex ->

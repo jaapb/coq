@@ -44,8 +44,8 @@ open Proofview.Notations
 
 let safe_msgnl s =
   Proofview.NonLogical.catch
-    (Proofview.NonLogical.print (s++fnl()))
-    (fun _ -> Proofview.NonLogical.print (str "bug in the debugger: an exception is raised while printing debug information"++fnl()))
+    (Proofview.NonLogical.print_debug (s++fnl()))
+    (fun _ -> Proofview.NonLogical.print_warning (str "bug in the debugger: an exception is raised while printing debug information"++fnl()))
 
 type value = tlevel generic_argument
 
@@ -557,7 +557,9 @@ let interp_gen kind ist allow_patvar flags env sigma (c,ce) =
         ltac_vars = constr_context;
         ltac_bound = Id.Map.domain ist.lfun;
       } in
-      intern_gen kind ~allow_patvar ~ltacvars env c
+      let kind_for_intern =
+        match kind with OfType _ -> WithoutTypeConstraint | _ -> kind in
+      intern_gen kind_for_intern ~allow_patvar ~ltacvars env c
   in
   let trace =
     push_trace (loc_of_glob_constr c,LtacConstrInterp (c,vars)) ist in
@@ -686,12 +688,12 @@ let interp_closed_typed_pattern_with_occurrences ist env sigma (occs, a) =
       try Inl (coerce_to_evaluable_ref env x)
       with CannotCoerceTo _ ->
         let c = coerce_to_closed_constr env x in
-        Inr (pi3 (pattern_of_constr env sigma c)) in
+        Inr (pattern_of_constr env sigma c) in
     (try try_interp_ltac_var coerce_eval_ref_or_constr ist (Some (env,sigma)) (loc,id)
      with Not_found ->
        error_global_not_found_loc loc (qualid_of_ident id))
   | Inl (ArgArg _ as b) -> Inl (interp_evaluable ist env sigma b)
-  | Inr c -> Inr (pi3 (interp_typed_pattern ist env sigma c)) in
+  | Inr c -> Inr (interp_typed_pattern ist env sigma c) in
   interp_occurrences ist occs, p
 
 let interp_constr_with_occurrences_and_name_as_list =
@@ -864,7 +866,7 @@ and interp_intro_pattern_action ist env sigma = function
       let sigma,l = interp_intro_pattern_list_as_list ist env sigma l in
       sigma, IntroInjection l
   | IntroApplyOn (c,ipat) ->
-      let c = fun env sigma -> interp_constr ist env sigma c in
+      let c = fun env sigma -> interp_open_constr ist env sigma c in
       let sigma,ipat = interp_intro_pattern ist env sigma ipat in
       sigma, IntroApplyOn (c,ipat)
   | IntroWildcard | IntroRewrite _ as x -> sigma, x
@@ -900,9 +902,9 @@ let interp_intro_pattern_option ist env sigma = function
       let sigma, ipat = interp_intro_pattern ist env sigma ipat in
       sigma, Some ipat
 
-let interp_in_hyp_as ist env sigma (clear,id,ipat) =
+let interp_in_hyp_as ist env sigma (id,ipat) =
   let sigma, ipat = interp_intro_pattern_option ist env sigma ipat in
-  sigma,(clear,interp_hyp ist env sigma id,ipat)
+  sigma,(interp_hyp ist env sigma id,ipat)
 
 let interp_quantified_hypothesis ist = function
   | AnonHyp n -> AnonHyp n
@@ -983,11 +985,11 @@ let interp_induction_arg ist gl arg =
       let try_cast_id id' =
         if Tactics.is_quantified_hypothesis id' gl
         then keep,ElimOnIdent (loc,id')
-        else
-          (try keep,ElimOnConstr (fun env sigma -> sigma,(constr_of_id env id',NoBindings))
+        else keep, ElimOnConstr (fun env sigma ->
+          try sigma, (constr_of_id env id', NoBindings)
           with Not_found ->
-            user_err_loc (loc,"",
-            pr_id id ++ strbrk " binds to " ++ pr_id id' ++ strbrk " which is neither a declared or a quantified hypothesis."))
+            user_err_loc (loc, "interp_induction_arg",
+            pr_id id ++ strbrk " binds to " ++ pr_id id' ++ strbrk " which is neither a declared nor a quantified hypothesis."))
       in
       try
         (** FIXME: should be moved to taccoerce *)
@@ -1038,11 +1040,12 @@ let interp_context ctxt = in_gen (topwit wit_constr_context) ctxt
 (* Reads a pattern by substituting vars of lfun *)
 let use_types = false
 
-let eval_pattern lfun ist env sigma (_,pat as c) =
+let eval_pattern lfun ist env sigma ((glob,_),pat as c) =
+  let bound_names = bound_glob_vars glob in
   if use_types then
-    pi3 (interp_typed_pattern ist env sigma c)
+    (bound_names,interp_typed_pattern ist env sigma c)
   else
-    instantiate_pattern env sigma lfun pat
+    (bound_names,instantiate_pattern env sigma lfun pat)
 
 let read_pattern lfun ist env sigma = function
   | Subterm (b,ido,c) -> Subterm (b,ido,eval_pattern lfun ist env sigma c)
@@ -1135,7 +1138,7 @@ and eval_tactic ist tac : unit Proofview.tactic = match tac with
         interp_message ist s >>= fun msg ->
         return (hov 0 msg , hov 0 msg)
       in
-      let print (_,msgnl) = Proofview.(tclLIFT (NonLogical.print msgnl)) in
+      let print (_,msgnl) = Proofview.(tclLIFT (NonLogical.print_info msgnl)) in
       let log (msg,_) = Proofview.Trace.log (fun () -> msg) in
       let break = Proofview.tclLIFT (db_breakpoint (curr_debug ist) s) in
       Ftactic.run msgnl begin fun msgnl ->
@@ -1832,8 +1835,8 @@ and interp_atomic ist tac : unit Proofview.tactic =
         let sigma,tac = match cl with
           | None -> sigma, Tactics.apply_with_delayed_bindings_gen a ev l
           | Some cl ->
-              let sigma,(clear,id,cl) = interp_in_hyp_as ist env sigma cl in
-              sigma, Tactics.apply_delayed_in a ev clear id l cl in
+              let sigma,(id,cl) = interp_in_hyp_as ist env sigma cl in
+              sigma, Tactics.apply_delayed_in a ev id l cl in
         Tacticals.New.tclWITHHOLES ev tac sigma
       end
       end
@@ -2151,7 +2154,7 @@ and interp_atomic ist tac : unit Proofview.tactic =
         let env = Proofview.Goal.env gl in
         let sigma = Proofview.Goal.sigma gl in
         Proofview.V82.tactic begin fun gl -> 
-          let (sigma,sign,op) = interp_typed_pattern ist env sigma op in
+          let op = interp_typed_pattern ist env sigma op in
           let to_catch = function Not_found -> true | e -> Errors.is_anomaly e in
           let c_interp patvars sigma =
 	    let lfun' = Id.Map.fold (fun id c lfun ->
@@ -2164,7 +2167,7 @@ and interp_atomic ist tac : unit Proofview.tactic =
 		errorlabstrm "" (strbrk "Failed to get enough information from the left-hand side to type the right-hand side.")
           in
 	    (Tactics.change (Some op) c_interp (interp_clause ist env sigma cl))
-	      { gl with sigma = sigma }
+	      gl
         end
       end
       end

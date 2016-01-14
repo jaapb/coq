@@ -476,13 +476,6 @@ through the <tt>Require Import</tt> command.</p>
     theories/MSets/MSetPositive.v
     theories/MSets/MSetToFiniteSet.v
     (theories/MSets/MSets.v)
-    theories/MMaps/MMapAVL.v
-    theories/MMaps/MMapFacts.v
-    theories/MMaps/MMapInterface.v
-    theories/MMaps/MMapList.v
-    theories/MMaps/MMapPositive.v
-    theories/MMaps/MMapWeakList.v
-    (theories/MMaps/MMaps.v)
   </dd>
 
   <dt> <b>FSets</b>:
@@ -617,6 +610,7 @@ through the <tt>Require Import</tt> command.</p>
     Compatibility wrappers for previous versions of Coq
   </dt>
   <dd>
+    theories/Compat/AdmitAxiom.v
     theories/Compat/Coq84.v
     theories/Compat/Coq85.v
   </dd>

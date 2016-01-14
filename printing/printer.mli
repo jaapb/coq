@@ -84,7 +84,8 @@ val pr_sort                : evar_map -> sorts -> std_ppcmds
 (** Universe constraints *)
 
 val pr_polymorphic         : bool -> std_ppcmds
-val pr_universe_ctx        : Univ.universe_context -> std_ppcmds
+val pr_universe_instance   : evar_map -> Univ.universe_context -> std_ppcmds
+val pr_universe_ctx        : evar_map -> Univ.universe_context -> std_ppcmds
 
 (** Printing global references using names as short as possible *)
 
@@ -175,7 +176,8 @@ module ContextObjectMap : CMap.ExtS
 val pr_assumptionset :
   env -> Term.types ContextObjectMap.t -> std_ppcmds
 
-val pr_goal_by_id : string -> std_ppcmds
+val pr_goal_by_id : Id.t -> std_ppcmds
+val pr_goal_by_uid : string -> std_ppcmds
 
 type printer_pr = {
  pr_subgoals            : ?pr_first:bool -> std_ppcmds option -> evar_map -> evar list -> Goal.goal list -> int list -> goal list -> std_ppcmds;

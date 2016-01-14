@@ -525,7 +525,7 @@ let rec check_and_clear_in_constr env evdref err ids c =
 let clear_hyps_in_evi_main env evdref hyps terms ids =
   (* clear_hyps_in_evi erases hypotheses ids in hyps, checking if some
      hypothesis does not depend on a element of ids, and erases ids in
-     the contexts of the evars occuring in evi *)
+     the contexts of the evars occurring in evi *)
   let terms =
     List.map (check_and_clear_in_constr env evdref (OccurHypInSimpleClause None) ids) terms in
   let nhyps =
@@ -715,7 +715,8 @@ let define_pure_evar_as_product evd evk =
   let id = next_ident_away idx (ids_of_named_context (evar_context evi)) in
   let concl = whd_betadeltaiota evenv evd evi.evar_concl in
   let s = destSort concl in
-  let evd1,(dom,u1) = new_type_evar evenv evd univ_flexible_alg ~filter:(evar_filter evi) in
+  let evd1,(dom,u1) =
+    new_type_evar evenv evd univ_flexible_alg ~filter:(evar_filter evi) in
   let evd2,rng =
     let newenv = push_named (id, None, dom) evenv in
     let src = evar_source evk evd1 in
@@ -724,8 +725,9 @@ let define_pure_evar_as_product evd evk =
        (* Impredicative product, conclusion must fall in [Prop]. *)
         new_evar newenv evd1 concl ~src ~filter
       else
+	let status = univ_flexible_alg in
 	let evd3, (rng, srng) =
-	  new_type_evar newenv evd1 univ_flexible_alg ~src ~filter in
+	  new_type_evar newenv evd1 status ~src ~filter in
 	let prods = Univ.sup (univ_of_sort u1) (univ_of_sort srng) in
 	let evd3 = Evd.set_leq_sort evenv evd3 (Type prods) s in
 	  evd3, rng

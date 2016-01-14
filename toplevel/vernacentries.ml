@@ -355,11 +355,6 @@ let dump_universes_gen g s =
     close ();
     iraise reraise
 
-let dump_universes sorted s =
-  let g = Global.universes () in
-  let g = if sorted then Univ.sort_universes g else g in
-  dump_universes_gen g s
-
 (*********************)
 (* "Locate" commands *)
 
@@ -478,7 +473,8 @@ let vernac_definition locality p (local,k) ((loc,id as lid),pl) def =
  		Some (snd (interp_redexp env evc r)) in
 	do_definition id (local,p,k) pl bl red_option c typ_opt hook)
 
-let vernac_start_proof p kind l lettop =
+let vernac_start_proof locality p kind l lettop =
+  let local = enforce_locality_exp locality None in
   if Dumpglob.dump () then
     List.iter (fun (id, _) ->
       match id with
@@ -488,7 +484,7 @@ let vernac_start_proof p kind l lettop =
     if lettop then
       errorlabstrm "Vernacentries.StartProof"
 	(str "Let declarations can only be used in proof editing mode.");
-  start_proof_and_print (Global, p, Proof kind) l no_hook
+  start_proof_and_print (local, p, Proof kind) l no_hook
 
 let qed_display_script = ref true
 
@@ -515,7 +511,7 @@ let vernac_assumption locality poly (local, kind) l nl =
   let kind = local, poly, kind in
   List.iter (fun (is_coe,(idl,c)) ->
     if Dumpglob.dump () then
-      List.iter (fun lid ->
+      List.iter (fun (lid, _) ->
 	if global then Dumpglob.dump_definition lid false "ax"
 	else Dumpglob.dump_definition lid true "var") idl) l;
   let status = do_assumptions kind nl l in
@@ -551,12 +547,12 @@ let vernac_inductive poly lo finite indl =
       Errors.error "The Variant keyword cannot be used to define a record type. Use Record instead."
   | [ ( id , bl , c , b, RecordDecl (oc,fs) ), [] ] ->
       vernac_record (match b with Class true -> Class false | _ -> b)
-	poly finite id bl c oc fs
+       poly finite id bl c oc fs
   | [ ( id , bl , c , Class true, Constructors [l]), _ ] ->
       let f =
 	let (coe, ((loc, id), ce)) = l in
 	let coe' = if coe then Some true else None in
-	  (((coe', AssumExpr ((loc, Name id), ce)), None), [])
+  	  (((coe', AssumExpr ((loc, Name id), ce)), None), [])
       in vernac_record (Class true) poly finite id bl c None [f]
   | [ ( id , bl , c , Class true, _), _ ] ->
       Errors.error "Definitional classes must have a single method"
@@ -601,8 +597,19 @@ let vernac_combined_scheme lid l =
      List.iter (fun lid -> dump_global (Misctypes.AN (Ident lid))) l);
  Indschemes.do_combined_scheme lid l
 
-let vernac_universe l = do_universe l
-let vernac_constraint l = do_constraint l
+let vernac_universe loc poly l =
+  if poly && not (Lib.sections_are_opened ()) then
+    user_err_loc (loc, "vernac_universe",
+		  str"Polymorphic universes can only be declared inside sections, " ++
+		  str "use Monomorphic Universe instead");
+  do_universe poly l
+
+let vernac_constraint loc poly l =
+  if poly && not (Lib.sections_are_opened ()) then
+    user_err_loc (loc, "vernac_constraint",
+		  str"Polymorphic universe constraints can only be declared"
+		  ++ str " inside sections, use Monomorphic Constraint instead");
+  do_constraint poly l
 
 (**********************)
 (* Modules            *)
@@ -874,18 +881,7 @@ let vernac_set_used_variables e =
       errorlabstrm "vernac_set_used_variables"
         (str "Unknown variable: " ++ pr_id id))
     l;
-  let closure_l = List.map pi1 (set_used_variables l) in
-  let closure_l = List.fold_right Id.Set.add closure_l Id.Set.empty in
-  let vars_of = Environ.global_vars_set in
-  let aux env entry (all_safe,rest as orig) =
-    match entry with
-    | (x,None,_) ->
-       if Id.Set.mem x all_safe then orig else (all_safe, (Loc.ghost,x)::rest) 
-    | (x,Some bo, ty) ->
-       let vars = Id.Set.union (vars_of env bo) (vars_of env ty) in
-       if Id.Set.subset vars all_safe then (Id.Set.add x all_safe, rest)
-       else (all_safe, (Loc.ghost,x) :: rest) in
-  let _,to_clear = Environ.fold_named_context aux env ~init:(closure_l,[]) in
+  let _, to_clear = set_used_variables l in
   vernac_solve
     SelectAll None Tacexpr.(TacAtom (Loc.ghost,TacClear(false,to_clear))) false
 
@@ -1358,19 +1354,10 @@ let _ =
       optwrite = Flags.make_universe_polymorphism }
 
 let _ =
-  declare_bool_option
-    { optsync  = true;
-      optdepr  = false;
-      optname  = "use of virtual machine inside the kernel";
-      optkey   = ["Virtual";"Machine"];
-      optread  = (fun () -> Vconv.use_vm ());
-      optwrite = (fun b -> Vconv.set_use_vm b) }
-
-let _ =
   declare_int_option
     { optsync  = true;
       optdepr  = false;
-      optname  = "the level of inling duging functor application";
+      optname  = "the level of inlining during functor application";
       optkey   = ["Inline";"Level"];
       optread  = (fun () -> Some (Flags.get_inline_level ()));
       optwrite = (fun o ->
@@ -1385,15 +1372,6 @@ let _ =
       optkey   = ["Kernel"; "Term"; "Sharing"];
       optread  = (fun () -> !Closure.share);
       optwrite = (fun b -> Closure.share := b) }
-
-let _ =
-  declare_bool_option
-    { optsync  = true;
-      optdepr  = false;
-      optname  = "use of boxed values";
-      optkey   = ["Boxed";"Values"];
-      optread  = (fun _ -> not (Vm.transp_values ()));
-      optwrite = (fun b -> Vm.set_transp_values (not b)) }
 
 (* No more undo limit in the new proof engine.
    The command still exists for compatibility (e.g. with ProofGeneral) *)
@@ -1497,6 +1475,8 @@ let vernac_set_opacity locality (v,l) =
 
 let vernac_set_option locality key = function
   | StringValue s -> set_string_option_value_gen locality key s
+  | StringOptValue (Some s) -> set_string_option_value_gen locality key s
+  | StringOptValue None -> unset_option_value_gen locality key
   | IntValue n -> set_int_option_value_gen locality key n
   | BoolValue b -> set_bool_option_value_gen locality key b
 
@@ -1542,7 +1522,7 @@ let vernac_check_may_eval redexp glopt rc =
   let sigma' = Evarconv.consider_remaining_unif_problems env sigma' in
   Evarconv.check_problems_are_solved env sigma';
   let sigma',nf = Evarutil.nf_evars_and_universes sigma' in
-  let uctx = Evd.universe_context sigma' in
+  let pl, uctx = Evd.universe_context sigma' in
   let env = Environ.push_context uctx (Evarutil.nf_env_evar sigma' env) in
   let c = nf c in
   let j =
@@ -1557,7 +1537,7 @@ let vernac_check_may_eval redexp glopt rc =
         let j = { j with Environ.uj_type = Reductionops.nf_betaiota sigma' j.Environ.uj_type } in
 	msg_notice (print_judgment env sigma' j ++
                     pr_ne_evar_set (fnl () ++ str "where" ++ fnl ()) (mt ()) sigma' l ++
-                    Printer.pr_universe_ctx uctx)
+                    Printer.pr_universe_ctx sigma uctx)
     | Some r ->
         Tacintern.dump_glob_red_expr r;
         let (sigma',r_interp) = interp_redexp env sigma' r in
@@ -1638,15 +1618,17 @@ let vernac_print = function
   | PrintCoercionPaths (cls,clt) ->
       msg_notice (Prettyp.print_path_between (cl_of_qualid cls) (cl_of_qualid clt))
   | PrintCanonicalConversions -> msg_notice (Prettyp.print_canonical_projections ())
-  | PrintUniverses (b, None) ->
+  | PrintUniverses (b, dst) ->
      let univ = Global.universes () in
      let univ = if b then Univ.sort_universes univ else univ in
      let pr_remaining =
        if Global.is_joined_environment () then mt ()
        else str"There may remain asynchronous universe constraints"
      in
-     msg_notice (Univ.pr_universes Universes.pr_with_global_universes univ ++ pr_remaining)
-  | PrintUniverses (b, Some s) -> dump_universes b s
+     begin match dst with
+     | None -> msg_notice (Univ.pr_universes Universes.pr_with_global_universes univ ++ pr_remaining)
+     | Some s -> dump_universes_gen univ s
+     end
   | PrintHint r -> msg_notice (Hints.pr_hint_ref (smart_global r))
   | PrintHintGoal -> msg_notice (Hints.pr_applicable_hint ())
   | PrintHintDbName s -> msg_notice (Hints.pr_hint_db_by_name s)
@@ -1801,6 +1783,7 @@ let vernac_show = function
       | OpenSubgoals -> pr_open_subgoals ()
       | NthGoal n -> pr_nth_open_subgoal n
       | GoalId id -> pr_goal_by_id id
+      | GoalUid id -> pr_goal_by_uid id
     in
     msg_notice info
   | ShowGoalImplicitly None ->
@@ -1855,8 +1838,9 @@ let vernac_load interp fname =
 
 (* "locality" is the prefix "Local" attribute, while the "local" component
  * is the outdated/deprecated "Local" attribute of some vernacular commands
- * still parsed as the obsolete_locality grammar entry for retrocompatibility *)
-let interp ?proof locality poly c =
+ * still parsed as the obsolete_locality grammar entry for retrocompatibility.
+ * loc is the Loc.t of the vernacular command being interpreted. *)
+let interp ?proof ~loc locality poly c =
   prerr_endline ("interpreting: " ^ Pp.string_of_ppcmds (Ppvernac.pr_vernac c));
   match c with
   (* Done later in this file *)
@@ -1886,7 +1870,7 @@ let interp ?proof locality poly c =
 
   (* Gallina *)
   | VernacDefinition (k,lid,d) -> vernac_definition locality poly k lid d
-  | VernacStartTheoremProof (k,l,top) -> vernac_start_proof poly k l top
+  | VernacStartTheoremProof (k,l,top) -> vernac_start_proof locality poly k l top
   | VernacEndProof e -> vernac_end_proof ?proof e
   | VernacExactProof c -> vernac_exact_proof c
   | VernacAssumption (stre,nl,l) -> vernac_assumption locality poly stre l nl
@@ -1895,8 +1879,8 @@ let interp ?proof locality poly c =
   | VernacCoFixpoint (local, l) -> vernac_cofixpoint locality poly local l
   | VernacScheme l -> vernac_scheme l
   | VernacCombinedScheme (id, l) -> vernac_combined_scheme id l
-  | VernacUniverse l -> vernac_universe l
-  | VernacConstraint l -> vernac_constraint l
+  | VernacUniverse l -> vernac_universe loc poly l
+  | VernacConstraint l -> vernac_constraint loc poly l
 
   (* Modules *)
   | VernacDeclareModule (export,lid,bl,mtyo) ->
@@ -1991,7 +1975,7 @@ let interp ?proof locality poly c =
   | VernacBacktrack _ -> msg_warning (str "VernacBacktrack not handled by Stm")
   
   (* Proof management *)
-  | VernacGoal t -> vernac_start_proof poly Theorem [None,([],t,None)] false
+  | VernacGoal t -> vernac_start_proof locality poly Theorem [None,([],t,None)] false
   | VernacFocus n -> vernac_focus n
   | VernacUnfocus -> vernac_unfocus ()
   | VernacUnfocused -> vernac_unfocused ()
@@ -2000,10 +1984,16 @@ let interp ?proof locality poly c =
   | VernacEndSubproof -> vernac_end_subproof ()
   | VernacShow s -> vernac_show s
   | VernacCheckGuard -> vernac_check_guard ()
-  | VernacProof (None, None) -> ()
-  | VernacProof (Some tac, None) -> vernac_set_end_tac tac
-  | VernacProof (None, Some l) -> vernac_set_used_variables l
+  | VernacProof (None, None) ->
+      Aux_file.record_in_aux_at loc "VernacProof" "tac:no using:no"
+  | VernacProof (Some tac, None) ->
+      Aux_file.record_in_aux_at loc "VernacProof" "tac:yes using:no";
+      vernac_set_end_tac tac
+  | VernacProof (None, Some l) ->
+      Aux_file.record_in_aux_at loc "VernacProof" "tac:no using:yes";
+      vernac_set_used_variables l
   | VernacProof (Some tac, Some l) -> 
+      Aux_file.record_in_aux_at loc "VernacProof" "tac:yes using:yes";
       vernac_set_end_tac tac; vernac_set_used_variables l
   | VernacProofMode mn -> Proof_global.set_proof_mode mn
   (* Toplevel control *)
@@ -2026,7 +2016,7 @@ let check_vernac_supports_locality c l =
     | VernacOpenCloseScope _
     | VernacSyntaxExtension _ | VernacInfix _ | VernacNotation _
     | VernacDefinition _ | VernacFixpoint _ | VernacCoFixpoint _
-    | VernacAssumption _
+    | VernacAssumption _ | VernacStartTheoremProof _
     | VernacCoercion _ | VernacIdentityCoercion _
     | VernacInstance _ | VernacDeclareInstances _
     | VernacDeclareMLModule _
@@ -2053,12 +2043,12 @@ let check_vernac_supports_polymorphism c p =
     | VernacCoercion _ | VernacIdentityCoercion _
     | VernacInstance _ | VernacDeclareInstances _
     | VernacHints _ | VernacContext _
-    | VernacExtend _ ) -> ()
+    | VernacExtend _ | VernacUniverse _ | VernacConstraint _) -> ()
   | Some _, _ -> Errors.error "This command does not support Polymorphism"
 
 let enforce_polymorphism = function
   | None -> Flags.is_universe_polymorphism ()
-  | Some b -> b
+  | Some b -> Flags.make_polymorphic_flag b; b
 
 (** A global default timeout, controled by option "Set Default Timeout n".
     Use "Unset Default Timeout" to deactivate it (or set it to 0). *)
@@ -2155,10 +2145,12 @@ let interp ?(verbosely=true) ?proof (loc,c) =
         Obligations.set_program_mode isprogcmd;
         try
           vernac_timeout begin fun () ->
-          if verbosely then Flags.verbosely (interp ?proof locality poly) c
-                       else Flags.silently  (interp ?proof locality poly) c;
+          if verbosely
+            then Flags.verbosely (interp ?proof ~loc locality poly) c
+            else Flags.silently  (interp ?proof ~loc locality poly) c;
           if orig_program_mode || not !Flags.program_mode || isprogcmd then
-            Flags.program_mode := orig_program_mode
+            Flags.program_mode := orig_program_mode;
+	  ignore (Flags.use_polymorphic_flag ())
           end
         with
         | reraise when
@@ -2170,6 +2162,7 @@ let interp ?(verbosely=true) ?proof (loc,c) =
             let e = locate_if_not_already loc e in
             let () = restore_timeout () in
             Flags.program_mode := orig_program_mode;
+	    ignore (Flags.use_polymorphic_flag ());
             iraise e
   and aux_list ?locality ?polymorphism isprogcmd l =
     List.iter (aux false) (List.map snd l)

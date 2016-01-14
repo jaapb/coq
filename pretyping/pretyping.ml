@@ -99,8 +99,31 @@ let search_guard loc env possible_indexes fixdefs =
 let ((constr_in : constr -> Dyn.t),
      (constr_out : Dyn.t -> constr)) = Dyn.create "constr"
 
+(* To force universe name declaration before use *)
+
+let strict_universe_declarations = ref true
+let is_strict_universe_declarations () = !strict_universe_declarations
+
+let _ =
+  Goptions.(declare_bool_option
+	  { optsync  = true;
+            optdepr  = false;
+	    optname  = "strict universe declaration";
+	    optkey   = ["Strict";"Universe";"Declaration"];
+	    optread  = is_strict_universe_declarations;
+	    optwrite = (:=) strict_universe_declarations })
+
+let _ =
+  Goptions.(declare_bool_option
+	  { optsync  = true;
+            optdepr  = false;
+	    optname  = "minimization to Set";
+	    optkey   = ["Universe";"Minimization";"ToSet"];
+	    optread  = Universes.is_set_minimization;
+	    optwrite = (:=) Universes.set_minimization })
+						  
 (** Miscellaneous interpretation functions *)
-let interp_universe_level_name evd s =
+let interp_universe_level_name evd (loc,s) =
   let names, _ = Universes.global_universe_names () in
     if CString.string_contains s "." then
       match List.rev (CString.split '.' s) with
@@ -122,7 +145,10 @@ let interp_universe_level_name evd s =
 	try let level = Evd.universe_of_name evd s in
 	      evd, level
 	with Not_found -> 
-	  new_univ_level_variable ~name:s univ_rigid evd
+	  if not (is_strict_universe_declarations ()) then
+  	    new_univ_level_variable ~name:s univ_rigid evd
+	  else user_err_loc (loc, "interp_universe_level_name",
+			     Pp.(str "Undeclared universe: " ++ str s))
 
 let interp_universe evd = function
   | [] -> let evd, l = new_univ_level_variable univ_rigid evd in
@@ -135,7 +161,7 @@ let interp_universe evd = function
 
 let interp_universe_level evd = function
   | None -> new_univ_level_variable univ_rigid evd
-  | Some s -> interp_universe_level_name evd s
+  | Some (loc,s) -> interp_universe_level_name evd (loc,s)
 
 let interp_sort evd = function
   | GProp -> evd, Prop Null
@@ -157,22 +183,26 @@ type inference_flags = {
   expand_evars : bool
 }
 
+let frozen_holes (sigma, sigma') =
+  let fold evk _ accu = Evar.Set.add evk accu in
+  Evd.fold_undefined fold sigma Evar.Set.empty
+
 let pending_holes (sigma, sigma') =
   let fold evk _ accu =
     if not (Evd.mem sigma evk) then Evar.Set.add evk accu else accu
   in
   Evd.fold_undefined fold sigma' Evar.Set.empty
 
-let apply_typeclasses env evdref pending fail_evar =
-  let filter_pending evk = Evar.Set.mem evk pending in
+let apply_typeclasses env evdref frozen fail_evar =
+  let filter_frozen evk = Evar.Set.mem evk frozen in
   evdref := Typeclasses.resolve_typeclasses
      ~filter:(if Flags.is_program_mode () 
-	      then (fun evk evi -> Typeclasses.no_goals_or_obligations evk evi && filter_pending evk)
-              else (fun evk evi -> Typeclasses.no_goals evk evi && filter_pending evk))
+	      then (fun evk evi -> Typeclasses.no_goals_or_obligations evk evi && not (filter_frozen evk))
+              else (fun evk evi -> Typeclasses.no_goals evk evi && not (filter_frozen evk)))
      ~split:true ~fail:fail_evar env !evdref;
   if Flags.is_program_mode () then (* Try optionally solving the obligations *)
     evdref := Typeclasses.resolve_typeclasses
-      ~filter:(fun evk evi -> Typeclasses.all_evars evk evi && filter_pending evk) ~split:true ~fail:false env !evdref
+      ~filter:(fun evk evi -> Typeclasses.all_evars evk evi && not (filter_frozen evk)) ~split:true ~fail:false env !evdref
 
 let apply_inference_hook hook evdref pending =
   evdref := Evar.Set.fold (fun evk sigma ->
@@ -193,9 +223,9 @@ let apply_heuristics env evdref fail_evar =
   with e when Errors.noncritical e ->
     let e = Errors.push e in if fail_evar then iraise e
 
-let check_typeclasses_instances_are_solved env current_sigma pending =
+let check_typeclasses_instances_are_solved env current_sigma frozen =
   (* Naive way, call resolution again with failure flag *)
-  apply_typeclasses env (ref current_sigma) pending true
+  apply_typeclasses env (ref current_sigma) frozen true
 
 let check_extra_evars_are_solved env current_sigma pending =
   Evar.Set.iter
@@ -207,26 +237,28 @@ let check_extra_evars_are_solved env current_sigma pending =
 	| _ ->
 	    error_unsolvable_implicit loc env current_sigma evk None) pending
 
-let check_evars_are_solved env current_sigma pending =
-  check_typeclasses_instances_are_solved env current_sigma pending;
+let check_evars_are_solved env current_sigma frozen pending =
+  check_typeclasses_instances_are_solved env current_sigma frozen;
   check_problems_are_solved env current_sigma;
   check_extra_evars_are_solved env current_sigma pending
 
 (* Try typeclasses, hooks, unification heuristics ... *)
 
 let solve_remaining_evars flags env current_sigma pending =
+  let frozen = frozen_holes pending in
   let pending = pending_holes pending in
   let evdref = ref current_sigma in
-  if flags.use_typeclasses then apply_typeclasses env evdref pending false;
+  if flags.use_typeclasses then apply_typeclasses env evdref frozen false;
   if Option.has_some flags.use_hook then
     apply_inference_hook (Option.get flags.use_hook env) evdref pending;
   if flags.use_unif_heuristics then apply_heuristics env evdref false;
-  if flags.fail_evar then check_evars_are_solved env !evdref pending;
+  if flags.fail_evar then check_evars_are_solved env !evdref frozen pending;
   !evdref
 
 let check_evars_are_solved env current_sigma pending =
+  let frozen = frozen_holes pending in
   let pending = pending_holes pending in
-  check_evars_are_solved env current_sigma pending
+  check_evars_are_solved env current_sigma frozen pending
 
 let process_inference_flags flags env initial_sigma (sigma,c) =
   let sigma = solve_remaining_evars flags env sigma (initial_sigma, sigma) in
@@ -296,8 +328,8 @@ let ltac_interp_name_env k0 lvar env =
   push_rel_context ctxt env
 
 let invert_ltac_bound_name lvar env id0 id =
-  let id = Id.Map.find id lvar.ltac_idents in
-  try mkRel (pi1 (lookup_rel_id id (rel_context env)))
+  let id' = Id.Map.find id lvar.ltac_idents in
+  try mkRel (pi1 (lookup_rel_id id' (rel_context env)))
   with Not_found ->
     errorlabstrm "" (str "Ltac variable " ++ pr_id id0 ++
 		       str " depends on pattern variable name " ++ pr_id id ++
@@ -357,7 +389,8 @@ let evar_kind_of_term sigma c =
 (*************************************************************************)
 (* Main pretyping function                                               *)
 
-let interp_universe_level_name evd = function
+let interp_universe_level_name evd l =
+  match l with
   | GProp -> evd, Univ.Level.prop
   | GSet -> evd, Univ.Level.set
   | GType s -> interp_universe_level evd s
@@ -367,18 +400,22 @@ let pretype_global loc rigid env evd gr us =
     match us with
     | None -> evd, None
     | Some l -> 
-      let _, ctx = Universes.unsafe_constr_of_global gr in
-      let arr = Univ.Instance.to_array (Univ.UContext.instance ctx) in
-      let len = Array.length arr in
-	if len != List.length l then
-	  user_err_loc (loc, "pretype", 
-			str "Universe instance should have length " ++ int len)
-	else
-	  let evd, l' = List.fold_left (fun (evd, univs) l -> 
+       let _, ctx = Universes.unsafe_constr_of_global gr in
+       let arr = Univ.Instance.to_array (Univ.UContext.instance ctx) in
+       let len = Array.length arr in
+       if len != List.length l then
+	 user_err_loc (loc, "pretype", 
+		       str "Universe instance should have length " ++ int len)
+       else
+	 let evd, l' = List.fold_left (fun (evd, univs) l -> 
 	    let evd, l = interp_universe_level_name evd l in
 	      (evd, l :: univs)) (evd, []) l
-      in 
-	evd, Some (Univ.Instance.of_array (Array.of_list (List.rev l')))
+	 in
+	 if List.exists (fun l -> Univ.Level.is_prop l) l' then
+	   user_err_loc (loc, "pretype",
+		 str "Universe instances cannot contain Prop, polymorphic" ++
+		   str " universe instances must be greater or equal to Set.");
+	 evd, Some (Univ.Instance.of_array (Array.of_list (List.rev l')))
   in
     Evd.fresh_global ~rigid ?names:instance env evd gr
 
@@ -413,13 +450,15 @@ let pretype_sort evdref = function
 
 let new_type_evar env evdref loc =
   let e, s = 
-    evd_comb0 (fun evd -> Evarutil.new_type_evar env evd univ_flexible_alg ~src:(loc,Evar_kinds.InternalHole)) evdref
+    evd_comb0 (fun evd -> Evarutil.new_type_evar env evd
+      univ_flexible_alg ~src:(loc,Evar_kinds.InternalHole)) evdref
   in e
 
 let get_projection env cst =
   let cb = lookup_constant cst env in
     match cb.Declarations.const_proj with
-    | Some {Declarations.proj_ind = mind; proj_npars = n; proj_arg = m; proj_type = ty} -> 
+    | Some {Declarations.proj_ind = mind; proj_npars = n;
+	    proj_arg = m; proj_type = ty} -> 
       (cst,mind,n,m,ty)
     | None -> raise Not_found
 
@@ -712,7 +751,9 @@ let rec pretype k0 resolve_tc (tycon : type_constraint) env evdref (lvar : ltac_
 	  pretype (mk_tycon tj.utj_val) env evdref lvar c
       | _ -> pretype empty_tycon env evdref lvar c1
     in
-    let t = j.uj_type in
+    let t = evd_comb1 (Evarsolve.refresh_universes
+      ~onlyalg:true ~status:Evd.univ_flexible (Some false) env)
+      evdref j.uj_type in
     (* The name specified by ltac is used also to create bindings. So
        the substitution must also be applied on variables before they are
        looked up in the rel context. *)
@@ -902,25 +943,20 @@ let rec pretype k0 resolve_tc (tycon : type_constraint) env evdref (lvar : ltac_
  	    let cj = pretype empty_tycon env evdref lvar c in
 	    let cty = nf_evar !evdref cj.uj_type and tval = nf_evar !evdref tj.utj_val in
 	      if not (occur_existential cty || occur_existential tval) then
-		begin 
-		  try
-		    let env = Environ.push_context_set (Evd.universe_context_set !evdref) env in 
-		    ignore (Reduction.vm_conv Reduction.CUMUL env cty tval); cj
-		  with Reduction.NotConvertible -> 
-		    error_actual_type_loc loc env !evdref cj tval 
+		let (evd,b) = Reductionops.vm_infer_conv env !evdref cty tval in
+		if b then (evdref := evd; cj)
+		else
+		  error_actual_type_loc loc env !evdref cj tval 
                       (ConversionFailed (env,cty,tval))
-		end
 	      else user_err_loc (loc,"",str "Cannot check cast with vm: " ++
 		str "unresolved arguments remain.")
 	  | NATIVEcast ->
  	    let cj = pretype empty_tycon env evdref lvar c in
 	    let cty = nf_evar !evdref cj.uj_type and tval = nf_evar !evdref tj.utj_val in
-            let evars = Nativenorm.evars_of_evar_map !evdref in
-	    let env = Environ.push_context_set (Evd.universe_context_set !evdref) env in 
             begin
-              try
-                ignore (Nativeconv.native_conv Reduction.CUMUL evars env cty tval); cj
-              with Reduction.NotConvertible -> 
+	      let (evd,b) = Nativenorm.native_infer_conv env !evdref cty tval in
+	      if b then (evdref := evd; cj)
+	      else
                 error_actual_type_loc loc env !evdref cj tval 
                   (ConversionFailed (env,cty,tval))
             end

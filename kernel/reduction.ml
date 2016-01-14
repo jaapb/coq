@@ -26,8 +26,6 @@ open Environ
 open Closure
 open Esubst
 
-let left2right = ref false
-
 let rec is_empty_stack = function
   [] -> true
   | Zupdate _::s -> is_empty_stack s
@@ -138,7 +136,7 @@ let betazeta_appvect n c v =
     if Int.equal n 0 then applist (substl env t, stack) else
     match kind_of_term t, stack with
         Lambda(_,_,c), arg::stacktl -> stacklam (n-1) (arg::env) c stacktl
-      | LetIn(_,b,_,c), _ -> stacklam (n-1) (b::env) c stack
+      | LetIn(_,b,_,c), _ -> stacklam (n-1) (substl env b::env) c stack
       | _ -> anomaly (Pp.str "Not enough lambda/let's") in
   stacklam n [] c (Array.to_list v)
 
@@ -175,7 +173,7 @@ let is_cumul = function CUMUL -> true | CONV -> false
 type 'a universe_compare = 
   { (* Might raise NotConvertible *)
     compare : env -> conv_pb -> sorts -> sorts -> 'a -> 'a;
-    compare_instances: bool -> Univ.Instance.t -> Univ.Instance.t -> 'a -> 'a;
+    compare_instances: flex:bool -> Univ.Instance.t -> Univ.Instance.t -> 'a -> 'a;
   } 
 
 type 'a universe_state = 'a * 'a universe_compare
@@ -187,8 +185,10 @@ type 'a infer_conversion_function = env -> Univ.universes -> 'a -> 'a -> Univ.co
 let sort_cmp_universes env pb s0 s1 (u, check) =
   (check.compare env pb s0 s1 u, check)
 
-let convert_instances flex u u' (s, check) =
-  (check.compare_instances flex u u' s, check)
+(* [flex] should be true for constants, false for inductive types and
+   constructors. *)
+let convert_instances ~flex u u' (s, check) =
+  (check.compare_instances ~flex u u' s, check)
 
 let conv_table_key infos k1 k2 cuniv =
   if k1 == k2 then cuniv else
@@ -198,7 +198,7 @@ let conv_table_key infos k1 k2 cuniv =
     else 
       let flex = evaluable_constant cst (info_env infos) 
 	&& RedFlags.red_set (info_flags infos) (RedFlags.fCONST cst)
-      in convert_instances flex u u' cuniv
+      in convert_instances ~flex u u' cuniv
   | VarKey id, VarKey id' when Id.equal id id' -> cuniv
   | RelKey n, RelKey n' when Int.equal n n' -> cuniv
   | _ -> raise NotConvertible
@@ -210,9 +210,7 @@ let compare_stacks f fmind lft1 stk1 lft2 stk2 cuniv =
           let cu1 = cmp_rec s1 s2 cuniv in
           (match (z1,z2) with
             | (Zlapp a1,Zlapp a2) -> 
-	      if !left2right then
-		Array.fold_left2 (fun cu x y -> f x y cu) cu1 a1 a2
-	      else Array.fold_right2 f a1 a2 cu1
+	       Array.fold_right2 f a1 a2 cu1
 	    | (Zlproj (c1,l1),Zlproj (c2,l2)) -> 
 	      if not (eq_constant c1 c2) then 
 		raise NotConvertible
@@ -594,7 +592,7 @@ let check_sort_cmp_universes env pb s0 s1 univs =
 let checked_sort_cmp_universes env pb s0 s1 univs =
   check_sort_cmp_universes env pb s0 s1 univs; univs
 
-let check_convert_instances _flex u u' univs =
+let check_convert_instances ~flex u u' univs =
   if Univ.Instance.check_eq univs u u' then univs
   else raise NotConvertible
 
@@ -634,10 +632,10 @@ let infer_cmp_universes env pb s0 s1 univs =
 	| CONV -> infer_eq univs u1 u2)
         else univs
 
-let infer_convert_instances flex u u' (univs,cstrs) =
+let infer_convert_instances ~flex u u' (univs,cstrs) =
   (univs, Univ.enforce_eq_instances u u' cstrs)
 
-let infered_universes : (Univ.universes * Univ.Constraint.t) universe_compare = 
+let inferred_universes : (Univ.universes * Univ.Constraint.t) universe_compare =
   { compare = infer_cmp_universes;
     compare_instances = infer_convert_instances }
 
@@ -670,7 +668,7 @@ let trans_conv_universes ?(l2r=false) ?(evars=fun _->None) reds =
 let trans_conv_leq_universes ?(l2r=false) ?(evars=fun _->None) reds = 
   trans_fconv_universes reds CUMUL l2r evars
 
-let fconv = trans_fconv (Id.Pred.full, Cpred.full)
+let fconv = trans_fconv full_transparent_state
 
 let conv_cmp ?(l2r=false) cv_pb = fconv cv_pb l2r (fun _->None)
 let conv ?(l2r=false) ?(evars=fun _->None) = fconv CONV l2r evars
@@ -685,7 +683,7 @@ let conv_leq_vecti ?(l2r=false) ?(evars=fun _->None) env v1 v2 =
     v1
     v2
 
-let generic_conv cv_pb l2r evars reds env univs t1 t2 =
+let generic_conv cv_pb ~l2r evars reds env univs t1 t2 =
   let (s, _) = 
     clos_fconv reds cv_pb l2r evars env univs t1 t2 
   in s
@@ -697,7 +695,7 @@ let infer_conv_universes cv_pb l2r evars reds env univs t1 t2 =
   in
     if b then cstrs
     else
-      let univs = ((univs, Univ.Constraint.empty), infered_universes) in
+      let univs = ((univs, Univ.Constraint.empty), inferred_universes) in
       let ((_,cstrs), _) = clos_fconv reds cv_pb l2r evars env univs t1 t2 in
 	cstrs
 
@@ -716,39 +714,19 @@ let infer_conv_leq ?(l2r=false) ?(evars=fun _ -> None) ?(ts=full_transparent_sta
     env univs t1 t2 = 
   infer_conv_universes CUMUL l2r evars ts env univs t1 t2
 
-(* option for conversion *)
-let nat_conv = ref (fun cv_pb sigma ->
-		    fconv cv_pb false (sigma.Nativelambda.evars_val))
-let set_nat_conv f = nat_conv := f
-
-let native_conv cv_pb sigma env t1 t2 =
-  if eq_constr t1 t2 then ()
-  else begin
-    let t1 = (it_mkLambda_or_LetIn t1 (rel_context env)) in
-    let t2 = (it_mkLambda_or_LetIn t2 (rel_context env)) in
-    !nat_conv cv_pb sigma env t1 t2 
-  end
-
+(* This reference avoids always having to link C code with the kernel *)
 let vm_conv = ref (fun cv_pb -> fconv cv_pb false (fun _->None))
 let set_vm_conv f = vm_conv := f
 let vm_conv cv_pb env t1 t2 =
   try
     !vm_conv cv_pb env t1 t2
   with Not_found | Invalid_argument _ ->
-      (* If compilation fails, fall-back to closure conversion *)
-      fconv cv_pb false (fun _->None) env t1 t2
-
-
-let default_conv = ref (fun cv_pb ?(l2r=false) -> fconv cv_pb l2r (fun _->None))
-
-let set_default_conv f = default_conv := f
+    (Pp.msg_warning
+      (Pp.str "Bytecode compilation failed, falling back to default conversion");
+     fconv cv_pb false (fun _->None) env t1 t2)
 
 let default_conv cv_pb ?(l2r=false) env t1 t2 =
-  try
-    !default_conv ~l2r cv_pb env t1 t2
-  with Not_found | Invalid_argument _ ->
-      (* If compilation fails, fall-back to closure conversion *)
-      fconv cv_pb false (fun _->None) env t1 t2
+    fconv cv_pb false (fun _ -> None) env t1 t2
 
 let default_conv_leq = default_conv CUMUL
 (*

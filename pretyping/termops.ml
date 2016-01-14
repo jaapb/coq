@@ -561,7 +561,7 @@ let free_rels m =
   in
   frec 1 Int.Set.empty m
 
-(* collects all metavar occurences, in left-to-right order, preserving
+(* collects all metavar occurrences, in left-to-right order, preserving
  * repetitions and all. *)
 
 let collect_metas c =
@@ -930,7 +930,7 @@ let adjust_subst_to_rel_context sign l =
     match sign, l with
     | (_,None,_)::sign', a::args' -> aux (a::subst) sign' args'
     | (_,Some c,_)::sign', args' ->
-	aux (substl (List.rev subst) c :: subst) sign' args'
+	aux (substl subst c :: subst) sign' args'
     | [], [] -> List.rev subst
     | _ -> anomaly (Pp.str "Instance and signature do not match")
   in aux [] (List.rev sign) l

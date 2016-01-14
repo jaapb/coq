@@ -134,10 +134,16 @@ let extract_context_levels env l =
 let make_polymorphic_if_constant_for_ind env {uj_val = c; uj_type = t} =
   let params, ccl = dest_prod_assum env t in
   match kind_of_term ccl with
-  | Sort (Type u) when isInd (fst (decompose_app (whd_betadeltaiota env c))) ->
-      let param_ccls = extract_context_levels env params in
-      let s = { template_param_levels = param_ccls; template_level = u} in
-      TemplateArity (params,s)
+  | Sort (Type u) ->
+     let ind, l = decompose_app (whd_betadeltaiota env c) in
+     if isInd ind && List.is_empty l then
+       let mis = lookup_mind_specif env (fst (destInd ind)) in
+       let nparams = Inductive.inductive_params mis in
+       let paramsl = CList.lastn nparams params in
+       let param_ccls = extract_context_levels env paramsl in
+       let s = { template_param_levels = param_ccls; template_level = u} in
+       TemplateArity (params,s)
+     else RegularArity t
   | _ ->
       RegularArity t
 
@@ -294,7 +300,7 @@ let judge_of_cast env cj k tj =
       match k with
       | VMcast ->
           mkCast (cj.uj_val, k, expected_type),
-          vm_conv CUMUL env cj.uj_type expected_type
+          Reduction.vm_conv CUMUL env cj.uj_type expected_type
       | DEFAULTcast ->
           mkCast (cj.uj_val, k, expected_type),
           default_conv ~l2r:false CUMUL env cj.uj_type expected_type
@@ -304,7 +310,7 @@ let judge_of_cast env cj k tj =
       | NATIVEcast ->
 	 let sigma = Nativelambda.empty_evars in
          mkCast (cj.uj_val, k, expected_type),
-         native_conv CUMUL sigma env cj.uj_type expected_type
+         Nativeconv.native_conv CUMUL sigma env cj.uj_type expected_type
     in
       { uj_val = c;
 	uj_type = expected_type }
@@ -471,7 +477,7 @@ let rec execute env cstr =
       let j' = execute env1 c3 in
         judge_of_letin env name j1 j2 j'
 
-    | Cast (c,k, t) ->
+    | Cast (c,k,t) ->
       let cj = execute env c in
       let tj = execute_type env t in
         judge_of_cast env cj k tj

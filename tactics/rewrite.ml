@@ -76,25 +76,6 @@ let coq_f_equal = find_global ["Init"; "Logic"] "f_equal"
 let coq_all = find_global ["Init"; "Logic"] "all"
 let impl = find_global ["Program"; "Basics"] "impl"
 
-(* let coq_inverse = lazy (gen_constant ["Program"; "Basics"] "flip") *)
-
-(* let inverse car rel = mkApp (Lazy.force coq_inverse, [| car ; car; mkProp; rel |]) *)
-
-(* let forall_relation = lazy (gen_constant ["Classes"; "Morphisms"] "forall_relation") *)
-(* let pointwise_relation = lazy (gen_constant ["Classes"; "Morphisms"] "pointwise_relation") *)
-(* let respectful = lazy (gen_constant ["Classes"; "Morphisms"] "respectful") *)
-(* let default_relation = lazy (gen_constant ["Classes"; "SetoidTactics"] "DefaultRelation") *)
-(* let subrelation = lazy (gen_constant ["Classes"; "RelationClasses"] "subrelation") *)
-(* let do_subrelation = lazy (gen_constant ["Classes"; "Morphisms"] "do_subrelation") *)
-(* let apply_subrelation = lazy (gen_constant ["Classes"; "Morphisms"] "apply_subrelation") *)
-(* let coq_relation = lazy (gen_constant ["Relations";"Relation_Definitions"] "relation") *)
-(* let mk_relation a = mkApp (Lazy.force coq_relation, [| a |]) *)
-
-(* let proper_type = lazy (Universes.constr_of_global (Lazy.force proper_class).cl_impl) *)
-(* let proper_proxy_type = lazy (Universes.constr_of_global (Lazy.force proper_proxy_class).cl_impl) *)
-
-
-
 (** Bookkeeping which evars are constraints so that we can 
     remove them at the end of the tactic. *)
 
@@ -422,7 +403,7 @@ module TypeGlobal = struct
 
 
   let inverse env (evd,cstrs) car rel = 
-    let evd, (sort,_) = Evarutil.new_type_evar env evd Evd.univ_flexible in
+    let evd, sort = Evarutil.new_Type ~rigid:Evd.univ_flexible env evd in
       app_poly_check env (evd,cstrs) coq_inverse [| car ; car; sort; rel |]
 
 end
@@ -1405,7 +1386,7 @@ module Strategies =
 
 end
 
-(** The strategy for a single rewrite, dealing with occurences. *)
+(** The strategy for a single rewrite, dealing with occurrences. *)
 
 (** A dummy initial clauseenv to avoid generating initial evars before
     even finding a first application of the rewriting lemma, in setoid_rewrite
@@ -1524,7 +1505,7 @@ let assert_replacing id newt tac =
     let after, before = List.split_when (fun (n, b, t) -> Id.equal n id) ctx in
     let nc = match before with
     | [] -> assert false
-    | (id, b, _) :: rem -> insert_dependent env (id, b, newt) [] after @ rem
+    | (id, b, _) :: rem -> insert_dependent env (id, None, newt) [] after @ rem
     in
     let env' = Environ.reset_with_named_context (val_of_named_context nc) env in
     Proofview.Refine.refine ~unsafe:false begin fun sigma ->
@@ -1540,12 +1521,13 @@ let assert_replacing id newt tac =
 let newfail n s = 
   Proofview.tclZERO (Refiner.FailError (n, lazy s))
 
-let cl_rewrite_clause_newtac ?abs ?origsigma strat clause =
+let cl_rewrite_clause_newtac ?abs ?origsigma ~progress strat clause =
   let open Proofview.Notations in
   let treat sigma res = 
     match res with
     | None -> newfail 0 (str "Nothing to rewrite")
-    | Some None -> Proofview.tclUNIT ()
+    | Some None -> if progress then newfail 0 (str"Failed to progress")
+		   else Proofview.tclUNIT ()
     | Some (Some res) ->
         let (undef, prf, newt) = res in
         let fold ev _ accu = if Evd.mem sigma ev then accu else ev :: accu in
@@ -1612,21 +1594,25 @@ let tactic_init_setoid () =
   try init_setoid (); tclIDTAC
   with e when Errors.noncritical e -> tclFAIL 0 (str"Setoid library not loaded")
 
-(** Setoid rewriting when called with "rewrite_strat" *)
-let cl_rewrite_clause_strat strat clause =
+let cl_rewrite_clause_strat progress strat clause =
   tclTHEN (tactic_init_setoid ())
-  (fun gl -> 
-     try Proofview.V82.of_tactic (cl_rewrite_clause_newtac strat clause) gl
-     with RewriteFailure e ->
-       errorlabstrm "" (str"setoid rewrite failed: " ++ e)
-     | Refiner.FailError (n, pp) -> 
-       tclFAIL n (str"setoid rewrite failed: " ++ Lazy.force pp) gl)
+  ((if progress then tclWEAK_PROGRESS else fun x -> x)
+   (fun gl -> 
+    try Proofview.V82.of_tactic (cl_rewrite_clause_newtac ~progress strat clause) gl
+    with RewriteFailure e ->
+	 errorlabstrm "" (str"setoid rewrite failed: " ++ e)
+       | Refiner.FailError (n, pp) -> 
+	  tclFAIL n (str"setoid rewrite failed: " ++ Lazy.force pp) gl))
 
 (** Setoid rewriting when called with "setoid_rewrite" *)
 let cl_rewrite_clause l left2right occs clause gl =
   let strat = rewrite_with left2right (general_rewrite_unif_flags ()) l occs in
-    cl_rewrite_clause_strat strat clause gl
+    cl_rewrite_clause_strat true strat clause gl
 
+(** Setoid rewriting when called with "rewrite_strat" *)
+let cl_rewrite_clause_strat strat clause =
+  cl_rewrite_clause_strat false strat clause
+  
 let apply_glob_constr c l2r occs = (); fun ({ state = () ; env = env } as input) ->
   let c sigma =
     let (sigma, c) = Pretyping.understand_tcc env sigma c in
@@ -1825,9 +1811,9 @@ let declare_projection n instance_id r =
     in it_mkProd_or_LetIn ccl ctx
   in
   let typ = it_mkProd_or_LetIn typ ctx in
+  let pl, ctx = Evd.universe_context sigma in
   let cst = 
-    Declare.definition_entry ~types:typ ~poly
-      ~univs:(Evd.universe_context sigma) term
+    Declare.definition_entry ~types:typ ~poly ~univs:ctx term
   in
     ignore(Declare.declare_constant n 
 	   (Entries.DefinitionEntry cst, Decl_kinds.IsDefinition Decl_kinds.Definition))
@@ -2032,7 +2018,8 @@ let general_s_rewrite cl l2r occs (c,l) ~new_goals gl =
       tclWEAK_PROGRESS 
 	(tclTHEN
            (Refiner.tclEVARS evd)
-	   (Proofview.V82.of_tactic (cl_rewrite_clause_newtac ~abs:(Some abs) ~origsigma strat cl))) gl
+	   (Proofview.V82.of_tactic
+	    (cl_rewrite_clause_newtac ~progress:true ~abs:(Some abs) ~origsigma strat cl))) gl
     with RewriteFailure e ->
       tclFAIL 0 (str"setoid rewrite failed: " ++ e) gl
 
@@ -2096,8 +2083,10 @@ let poly_proof getp gett env evm car rel =
 let setoid_reflexivity =
   setoid_proof "reflexive"
     (fun env evm car rel -> 
-      tac_open (poly_proof PropGlobal.get_reflexive_proof TypeGlobal.get_reflexive_proof
-		  env evm car rel) (fun c -> Proofview.V82.of_tactic (apply c)))
+     tac_open (poly_proof PropGlobal.get_reflexive_proof
+			  TypeGlobal.get_reflexive_proof
+			  env evm car rel)
+	      (fun c -> tclCOMPLETE (Proofview.V82.of_tactic (apply c))))
     (reflexivity_red true)
 
 let setoid_symmetry =
